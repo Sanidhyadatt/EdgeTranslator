@@ -72,6 +72,7 @@ flutter:
     - assets/models/tiny-encoder.int8.onnx
     - assets/models/tiny-decoder.int8.onnx
     - assets/models/tiny-tokens.txt
+    - assets/models/silero_vad.onnx
     - assets/models/nmt_en_ja/
     - assets/models/nmt_ja_en/
     - assets/models/tts_en/

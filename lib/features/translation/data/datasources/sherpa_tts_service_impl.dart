@@ -55,7 +55,8 @@ class SherpaTtsServiceImpl implements TtsService {
       // Resolve English TTS files
       final enModelFile = File(ttsPaths.en.modelPath);
       final enTokensFile = File(ttsPaths.en.tokensPath);
-      final enLexiconFile = File(p.join(enModelFile.parent.path, 'lexicon.txt'));
+      final enLexiconPath = ttsPaths.en.lexiconPath ?? p.join(enModelFile.parent.path, 'lexicon.txt');
+      final enLexiconFile = File(enLexiconPath);
       final enDataDir = ttsPaths.en.dataDir ?? '';
       final hasEnLexicon = enLexiconFile.existsSync();
       final hasEnDataDir = enDataDir.isNotEmpty && Directory(enDataDir).existsSync();

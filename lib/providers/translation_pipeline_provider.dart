@@ -86,13 +86,13 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   /// Toggles continuous listening with Silero Voice Activity Detection (VAD).
   Future<void> toggleContinuousListening() async {
     if (state.isContinuousListening) {
-      await stopContinuousListening();
+      await stopContinuousListening(processPending: false);
     } else {
       await startContinuousListening();
     }
   }
 
-  /// Activates the continuous 16kHz PCM streaming and Silero VAD loop.
+  /// Activates continuous 16kHz PCM streaming and Silero VAD loop.
   Future<void> startContinuousListening() async {
     try {
       final audioService = ref.read(audioServiceProvider);
@@ -128,7 +128,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         clearError: true,
       );
 
-      AppLogger.info('Pipeline', 'Continuous listening active. Silero VAD loop running with 1.5s endpointing.');
+      AppLogger.info('Pipeline', 'Continuous listening active.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Failed to start continuous listening', e, st);
       state = state.copyWith(
@@ -140,7 +140,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   }
 
   /// Halts the continuous VAD loop and microphone stream.
-  Future<void> stopContinuousListening() async {
+  Future<void> stopContinuousListening({bool processPending = true}) async {
     await _audioStreamSub?.cancel();
     _audioStreamSub = null;
 
@@ -148,6 +148,10 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     await audioService.stopContinuousStream();
 
     final asrService = ref.read(asrServiceProvider);
+    Float32List? pendingSamples;
+    if (processPending) {
+      pendingSamples = asrService.flushSpeechSegment();
+    }
     asrService.resetVad();
 
     state = state.copyWith(
@@ -158,6 +162,78 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     );
 
     AppLogger.info('Pipeline', 'Continuous listening stopped.');
+
+    if (processPending && pendingSamples != null && pendingSamples.isNotEmpty) {
+      await _processEndpointedSpeech(pendingSamples);
+    }
+  }
+
+  /// Immediately stop hearing / listening (Cancel).
+  Future<void> stopHearing() async {
+    await stopContinuousListening(processPending: false);
+  }
+
+  /// Tell the pipeline: "I'm done speaking, translate what I said now".
+  Future<void> doneSpeakingNow() async {
+    final asrService = ref.read(asrServiceProvider);
+    final flushed = asrService.flushSpeechSegment();
+    await stopContinuousListening(processPending: false);
+    if (flushed != null && flushed.isNotEmpty) {
+      await _processEndpointedSpeech(flushed);
+    }
+  }
+
+  /// Start push-to-talk recording for a specific language.
+  Future<void> startPushToTalk(TranslationLanguage language) async {
+    try {
+      if (state.isContinuousListening) {
+        await stopContinuousListening(processPending: false);
+      }
+      final audioService = ref.read(audioServiceProvider);
+      final permitted = await audioService.hasPermission();
+      if (!permitted) {
+        state = state.copyWith(
+          status: PipelineStatus.error,
+          errorMessage: 'Microphone permission not granted.',
+        );
+        return;
+      }
+      final asrService = ref.read(asrServiceProvider);
+      await asrService.initialize();
+      await audioService.startRecording();
+      state = state.copyWith(
+        status: PipelineStatus.recording,
+        activeLanguage: language,
+        clearInterim: true,
+        clearError: true,
+      );
+    } catch (e, st) {
+      AppLogger.error('Pipeline', 'Failed startPushToTalk', e, st);
+    }
+  }
+
+  /// Finish push-to-talk recording, transcribe, translate, and speak.
+  Future<void> stopPushToTalk(TranslationLanguage language) async {
+    if (state.status != PipelineStatus.recording) return;
+    try {
+      final audioService = ref.read(audioServiceProvider);
+      final samples = await audioService.stopRecording();
+      if (samples.isNotEmpty) {
+        await _processEndpointedSpeech(samples, forcedLanguage: language);
+      } else {
+        state = state.copyWith(status: PipelineStatus.idle, clearActiveLanguage: true);
+      }
+    } catch (e, st) {
+      AppLogger.error('Pipeline', 'Failed stopPushToTalk', e, st);
+      state = state.copyWith(status: PipelineStatus.idle, clearActiveLanguage: true);
+    }
+  }
+
+  /// Cancel push-to-talk recording without translating.
+  Future<void> cancelPushToTalk() async {
+    final audioService = ref.read(audioServiceProvider);
+    await audioService.cancelRecording();
+    state = state.copyWith(status: PipelineStatus.idle, clearActiveLanguage: true);
   }
 
   /// Handles real-time PCM audio chunks and feeds Silero VAD.
@@ -167,7 +243,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     final asrService = ref.read(asrServiceProvider);
     asrService.acceptVadWaveform(chunk);
 
-    // If speech is detected and we are currently in idle, reflect listening state in UI
     if (state.status == PipelineStatus.idle) {
       state = state.copyWith(
         status: PipelineStatus.recording,
@@ -175,7 +250,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       );
     }
 
-    // Check if VAD has detected an endpoint (1.5 seconds of silence after speech)
     if (asrService.hasSpeechSegment()) {
       final speechSamples = asrService.popSpeechSegment();
       if (speechSamples != null && speechSamples.isNotEmpty) {
@@ -184,13 +258,16 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     }
   }
 
-  /// Automatically triggered by VAD endpointing: Transcribes -> Translates -> Synthesizes.
-  Future<void> _processEndpointedSpeech(Float32List speechSamples) async {
+  /// Automatically triggered by VAD endpointing or manual Done Speaking: Transcribes -> Translates -> Synthesizes.
+  Future<void> _processEndpointedSpeech(
+    Float32List speechSamples, {
+    TranslationLanguage? forcedLanguage,
+  }) async {
     _isProcessingSegment = true;
 
     AppLogger.info(
       'Pipeline',
-      'VAD Endpoint detected! Finalizing transcription for ${speechSamples.length} samples...',
+      'Processing speech segment with ${speechSamples.length} samples...',
     );
 
     try {
@@ -199,27 +276,33 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       final asrService = ref.read(asrServiceProvider);
       final asrResult = await asrService.transcribe(speechSamples);
 
-      final validTranscript = asrResult.text.isNotEmpty
-          ? asrResult.text
-          : (asrResult.isJapanese ? 'こんにちは！' : 'Hello!');
+      final validTranscript = asrResult.text.trim();
+      if (validTranscript.isEmpty) {
+        AppLogger.info('Pipeline', 'ASR returned empty transcript (no speech detected).');
+        state = state.copyWith(
+          status: PipelineStatus.idle,
+          clearActiveLanguage: true,
+          clearInterim: true,
+        );
+        return;
+      }
 
-      // Evaluate the language code from the ASR output
-      final sourceLang = asrResult.translationLanguage;
+      // Evaluate source and target languages
+      final sourceLang = forcedLanguage ?? asrResult.translationLanguage;
       final targetLang = sourceLang.opposite;
-      final isEnglish = asrResult.isEnglish;
+      final isEnglish = sourceLang == TranslationLanguage.english;
 
       AppLogger.info(
         'Pipeline',
-        'VAD Speech: "$validTranscript" (ASR Detected Lang: "${asrResult.language}" -> ${sourceLang.name} -> Routing to ${isEnglish ? "en-ja" : "ja-en"} ONNX model)',
+        'VAD Speech: "$validTranscript" (Detected: ${sourceLang.name}). Translating via Google ML Kit...',
       );
 
-      // 2. Translate text via NMT
+      // 2. Translate text via Google ML Kit NMT
       state = state.copyWith(
         status: PipelineStatus.translating,
         activeLanguage: sourceLang,
         interimTranscript: validTranscript,
       );
-      await Future<void>.delayed(const Duration(seconds: 1));
 
       final nmtService = ref.read(nmtServiceProvider);
       final translatedText = await nmtService.translate(
@@ -233,7 +316,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         status: PipelineStatus.synthesizing,
         interimTranslation: translatedText,
       );
-      await Future<void>.delayed(const Duration(milliseconds: 300));
 
       final ttsService = ref.read(ttsServiceProvider);
       final audioFilePath = await ttsService.synthesize(
@@ -252,8 +334,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         } catch (e) {
           AppLogger.warning('Pipeline', 'Audio playback hardware notice: $e');
         }
-      } else {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
       }
 
       // 5. Append message to chat history
@@ -273,12 +353,12 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         clearInterim: true,
       );
 
-      AppLogger.info('Pipeline', 'VAD utterance processed and appended. Resuming listening...');
+      AppLogger.info('Pipeline', 'Speech translated and added to history.');
     } catch (e, st) {
-      AppLogger.error('Pipeline', 'Error during VAD utterance processing', e, st);
+      AppLogger.error('Pipeline', 'Error during speech processing', e, st);
       state = state.copyWith(
         status: PipelineStatus.error,
-        errorMessage: 'VAD processing error: $e',
+        errorMessage: 'Speech processing error: $e',
       );
     } finally {
       _isProcessingSegment = false;
@@ -288,19 +368,21 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   }
 
   /// Submits manual text input directly into the translation pipeline,
-  /// bypassing the Recording and Transcribing (ASR) stages.
-  Future<void> processText(String input) async {
+  /// translates via Google ML Kit, synthesizes voice, and reads aloud.
+  Future<void> processText(
+    String input, {
+    TranslationLanguage? explicitSourceLang,
+  }) async {
     final text = input.trim();
     if (text.isEmpty || state.status.isBusy) return;
 
-    // Detect language using Unicode character analysis (Hiragana, Katakana, Kanji)
-    final sourceLang = detectLanguage(text);
+    final sourceLang = explicitSourceLang ?? detectLanguage(text);
     final targetLang = sourceLang.opposite;
     final isEnglish = sourceLang == TranslationLanguage.english;
 
     AppLogger.info(
       'Pipeline',
-      'Manual text input: "$text" (Detected: ${sourceLang.name}). Routing to ${isEnglish ? "en-ja" : "ja-en"} ONNX model and ${isEnglish ? "Japanese" : "English"} TTS.',
+      'Manual text input: "$text" (${sourceLang.name} -> ${targetLang.name}). Translating with Google ML Kit & synthesizing TTS.',
     );
 
     try {
@@ -310,11 +392,8 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         interimTranscript: text,
         clearError: true,
       );
-      await Future<void>.delayed(const Duration(seconds: 1));
 
-      // 1. Bidirectional NMT Translation:
-      // If English: pass to en-ja ONNX model.
-      // If Japanese: pass to ja-en ONNX model.
+      // 1. Google ML Kit Translation
       final nmtService = ref.read(nmtServiceProvider);
       final translatedText = await nmtService.translate(
         text,
@@ -322,14 +401,11 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         targetLang: isEnglish ? 'ja' : 'en',
       );
 
-      // 2. Bidirectional TTS Voice Synthesis:
-      // If English input: output to Japanese TTS ('ja').
-      // If Japanese input: output to English TTS ('en').
+      // 2. TTS Voice Synthesis (Japanese TTS for EN->JA, English TTS for JA->EN)
       state = state.copyWith(
         status: PipelineStatus.synthesizing,
         interimTranslation: translatedText,
       );
-      await Future<void>.delayed(const Duration(milliseconds: 300));
 
       final ttsService = ref.read(ttsServiceProvider);
       final audioFilePath = await ttsService.synthesize(
@@ -348,8 +424,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         } catch (e) {
           AppLogger.warning('Pipeline', 'Audio playback hardware notice: $e');
         }
-      } else {
-        await Future<void>.delayed(const Duration(milliseconds: 300));
       }
 
       // 4. Append to conversation history
@@ -368,7 +442,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         clearActiveLanguage: true,
         clearInterim: true,
       );
-      AppLogger.info('Pipeline', 'Manual text translation complete and added to history.');
+      AppLogger.info('Pipeline', 'Text translation complete and read aloud.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Manual text translation error', e, st);
       state = state.copyWith(

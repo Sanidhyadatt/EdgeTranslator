@@ -14,12 +14,10 @@ class TranslationService {
   TranslationService({OnDeviceTranslatorModelManager? modelManager})
       : _modelManager = modelManager ?? OnDeviceTranslatorModelManager();
 
-  bool _isMockModelsDownloaded = false;
-
   /// Downloads and verifies the offline English and Japanese translation model packs.
-  Future<bool> initializeModels({bool isWifiRequired = true}) async {
+  Future<bool> initializeModels({bool isWifiRequired = false}) async {
     try {
-      AppLogger.info('TranslationService', 'Checking and downloading offline translation models...');
+      AppLogger.info('TranslationService', 'Checking and downloading offline translation models via Google ML Kit...');
 
       // 1. English Model Pack
       final enCode = TranslateLanguage.english.bcpCode;
@@ -43,60 +41,71 @@ class TranslationService {
         AppLogger.info('TranslationService', 'Japanese model pack is already cached on device.');
       }
 
-      _isMockModelsDownloaded = true;
-      AppLogger.info('TranslationService', 'All offline translation models initialized successfully.');
-      return true;
+      final downloaded = await areModelsDownloaded();
+      AppLogger.info('TranslationService', 'Offline translation models status: $downloaded');
+      return downloaded;
     } catch (e, st) {
-      AppLogger.error('TranslationService', 'Platform model download not available or failed (e.g. Web/Chrome dev)', e, st);
-      _isMockModelsDownloaded = true;
-      return true;
+      AppLogger.error('TranslationService', 'Platform model download error', e, st);
+      return false;
     }
   }
 
-  /// Translates English text to Japanese using the offline on-device model.
+  /// Translates English text to Japanese using the offline Google ML Kit on-device model.
   /// Calls `close()` on the translator instance in a finally block to prevent memory leaks.
   Future<String> translateToJapanese(String text) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return '';
+
     final onDeviceTranslator = OnDeviceTranslator(
       sourceLanguage: TranslateLanguage.english,
       targetLanguage: TranslateLanguage.japanese,
     );
 
     try {
-      AppLogger.info('TranslationService', 'Translating [EN -> JA]: "$text"');
-      final result = await onDeviceTranslator.translateText(text);
+      AppLogger.info('TranslationService', 'Google ML Kit translating [EN -> JA]: "$clean"');
+      final result = await onDeviceTranslator.translateText(clean);
+      AppLogger.info('TranslationService', 'Google ML Kit translated [EN -> JA]: "$clean" -> "$result"');
       return result;
     } catch (e, st) {
-      AppLogger.error('TranslationService', 'Native ML Kit translation error', e, st);
-      return _fallbackTranslateEnToJa(text);
+      AppLogger.error('TranslationService', 'Native Google ML Kit translation error', e, st);
+      final isDownloaded = await areModelsDownloaded();
+      if (!isDownloaded) {
+        return '[Offline models not downloaded. Please tap "Download Models" to download EN/JA offline packs]';
+      }
+      return clean;
     } finally {
-      // Ensure native translator instance is disposed immediately to prevent memory leaks
       try {
         await onDeviceTranslator.close();
-        AppLogger.info('TranslationService', 'Closed OnDeviceTranslator (EN -> JA) instance.');
       } catch (_) {}
     }
   }
 
-  /// Translates Japanese text to English using the offline on-device model.
+  /// Translates Japanese text to English using the offline Google ML Kit on-device model.
   /// Calls `close()` on the translator instance in a finally block to prevent memory leaks.
   Future<String> translateToEnglish(String text) async {
+    final clean = text.trim();
+    if (clean.isEmpty) return '';
+
     final onDeviceTranslator = OnDeviceTranslator(
       sourceLanguage: TranslateLanguage.japanese,
       targetLanguage: TranslateLanguage.english,
     );
 
     try {
-      AppLogger.info('TranslationService', 'Translating [JA -> EN]: "$text"');
-      final result = await onDeviceTranslator.translateText(text);
+      AppLogger.info('TranslationService', 'Google ML Kit translating [JA -> EN]: "$clean"');
+      final result = await onDeviceTranslator.translateText(clean);
+      AppLogger.info('TranslationService', 'Google ML Kit translated [JA -> EN]: "$clean" -> "$result"');
       return result;
     } catch (e, st) {
-      AppLogger.error('TranslationService', 'Native ML Kit translation error', e, st);
-      return _fallbackTranslateJaToEn(text);
+      AppLogger.error('TranslationService', 'Native Google ML Kit translation error', e, st);
+      final isDownloaded = await areModelsDownloaded();
+      if (!isDownloaded) {
+        return '[Offline models not downloaded. Please tap "Download Models" to download EN/JA offline packs]';
+      }
+      return clean;
     } finally {
-      // Ensure native translator instance is disposed immediately to prevent memory leaks
       try {
         await onDeviceTranslator.close();
-        AppLogger.info('TranslationService', 'Closed OnDeviceTranslator (JA -> EN) instance.');
       } catch (_) {}
     }
   }
@@ -107,28 +116,10 @@ class TranslationService {
       final enReady = await _modelManager.isModelDownloaded(TranslateLanguage.english.bcpCode);
       final jaReady = await _modelManager.isModelDownloaded(TranslateLanguage.japanese.bcpCode);
       return enReady && jaReady;
-    } catch (_) {
-      return _isMockModelsDownloaded;
+    } catch (e) {
+      AppLogger.warning('TranslationService', 'Error checking model download status: $e');
+      return false;
     }
-  }
-
-  String _fallbackTranslateEnToJa(String text) {
-    final lower = text.trim().toLowerCase();
-    if (lower.contains('shibuya')) return '渋谷駅はどこですか？';
-    if (lower.contains('hello') || lower.contains('hi')) return 'こんにちは！';
-    if (lower.contains('thank')) return 'ありがとうございます！';
-    if (lower.contains('how are you')) return 'お元気ですか？';
-    if (lower.contains('where')) return 'どこにありますか？';
-    return '$text (日本語訳)';
-  }
-
-  String _fallbackTranslateJaToEn(String text) {
-    final t = text.trim();
-    if (t.contains('渋谷') || t.contains('駅')) return 'Where is Shibuya station?';
-    if (t.contains('こんにちは')) return 'Hello! How are you?';
-    if (t.contains('ありがとう')) return 'Thank you very much!';
-    if (t.contains('元気')) return 'How are you doing?';
-    return '$text (English translation)';
   }
 }
 

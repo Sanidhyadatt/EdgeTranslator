@@ -3,14 +3,15 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:record/record.dart';
 
 import '../core/services/audio_service.dart';
+import '../features/translation/data/datasources/mlkit_nmt_service_impl.dart';
 import '../features/translation/data/datasources/model_loader.dart';
-import '../features/translation/data/datasources/onnx_nmt_service_impl.dart';
 import '../features/translation/data/datasources/sherpa_asr_service_impl.dart';
 import '../features/translation/data/datasources/sherpa_tts_service_impl.dart';
 import '../features/translation/data/repositories/translation_repository.dart';
 import '../features/translation/domain/services/asr_service.dart';
 import '../features/translation/domain/services/nmt_service.dart';
 import '../features/translation/domain/services/tts_service.dart';
+import '../core/services/translation_service.dart';
 export '../core/services/translation_service.dart';
 
 /// Provider for microphone audio capture service (16kHz PCM Float32).
@@ -44,8 +45,8 @@ final asrServiceProvider = Provider<AsrService>((ref) {
 
 /// Provider for offline NMT neural machine translation service.
 final nmtServiceProvider = Provider<NmtService>((ref) {
-  final modelLoader = ref.watch(modelLoaderProvider);
-  final service = OnnxNmtServiceImpl(modelLoader: modelLoader);
+  final translationService = ref.watch(translationServiceProvider);
+  final service = MlKitNmtServiceImpl(translationService: translationService);
   ref.onDispose(() => service.dispose());
   return service;
 });

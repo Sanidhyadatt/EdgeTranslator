@@ -8,6 +8,7 @@ import '../../../../providers/translation_pipeline_provider.dart';
 import '../../domain/models/chat_message.dart';
 import '../widgets/chat_log_view.dart';
 import '../widgets/continuous_listening_toggle.dart';
+import '../widgets/hold_to_talk_button.dart';
 import '../widgets/manual_text_input_bar.dart';
 import '../widgets/status_banner.dart';
 
@@ -169,26 +170,114 @@ class HomeScreen extends ConsumerWidget {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  // If continuous listening is active, show the quick control bar
+                  if (pipelineState.isContinuousListening) ...[
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.errorRose,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              ),
+                              icon: const Icon(Icons.stop_circle_outlined, size: 20),
+                              label: const Text(
+                                'Stop Hearing',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              onPressed: () => pipelineNotifier.stopHearing(),
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.successEmerald,
+                                foregroundColor: Colors.white,
+                                elevation: 0,
+                                padding: const EdgeInsets.symmetric(vertical: 12),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+                              ),
+                              icon: const Icon(Icons.check_circle_outline_rounded, size: 20),
+                              label: const Text(
+                                'Done Speaking',
+                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                              ),
+                              onPressed: () => pipelineNotifier.doneSpeakingNow(),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+
                   // Continuous Hands-Free Listening Toggle Switch (Silero VAD)
                   ContinuousListeningToggle(
                     isListening: pipelineState.isContinuousListening,
                     status: pipelineState.status,
                     onToggle: () => pipelineNotifier.toggleContinuousListening(),
                   ),
-                  const SizedBox(height: 12),
-                  // Manual Text Input Bar with Toggle Switch and Dual Send Buttons
+                  const SizedBox(height: 10),
+
+                  // Push-to-Talk / Hold-to-Talk buttons for direct manual speech
+                  if (!pipelineState.isContinuousListening) ...[
+                    Row(
+                      children: [
+                        Expanded(
+                          child: HoldToTalkButton(
+                            language: TranslationLanguage.english,
+                            isRecording: pipelineState.status == PipelineStatus.recording &&
+                                pipelineState.activeLanguage == TranslationLanguage.english,
+                            isProcessing: pipelineState.status.isProcessing,
+                            isOtherActive: pipelineState.status == PipelineStatus.recording &&
+                                pipelineState.activeLanguage != TranslationLanguage.english,
+                            onHoldStart: () => pipelineNotifier.startPushToTalk(TranslationLanguage.english),
+                            onHoldEnd: () => pipelineNotifier.stopPushToTalk(TranslationLanguage.english),
+                            onHoldCancel: () => pipelineNotifier.cancelPushToTalk(),
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: HoldToTalkButton(
+                            language: TranslationLanguage.japanese,
+                            isRecording: pipelineState.status == PipelineStatus.recording &&
+                                pipelineState.activeLanguage == TranslationLanguage.japanese,
+                            isProcessing: pipelineState.status.isProcessing,
+                            isOtherActive: pipelineState.status == PipelineStatus.recording &&
+                                pipelineState.activeLanguage != TranslationLanguage.japanese,
+                            onHoldStart: () => pipelineNotifier.startPushToTalk(TranslationLanguage.japanese),
+                            onHoldEnd: () => pipelineNotifier.stopPushToTalk(TranslationLanguage.japanese),
+                            onHoldCancel: () => pipelineNotifier.cancelPushToTalk(),
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                  ],
+
+                  // Manual Text Input Bar (translates with Google ML Kit & reads aloud with TTS)
                   ManualTextInputBar(
                     isBusy: pipelineState.status.isBusy || chatState.isLoading,
                     activeLanguage: chatState.activeInputLanguage,
                     onLanguageChanged: (lang) => chatNotifier.setInputLanguage(lang),
-                    onSendEnglish: (text) => chatNotifier.sendEnglishText(text),
-                    onSendJapanese: (text) => chatNotifier.sendJapaneseText(text),
+                    onSendEnglish: (text) => pipelineNotifier.processText(
+                      text,
+                      explicitSourceLang: TranslationLanguage.english,
+                    ),
+                    onSendJapanese: (text) => pipelineNotifier.processText(
+                      text,
+                      explicitSourceLang: TranslationLanguage.japanese,
+                    ),
                     onSubmit: (text) {
-                      if (chatState.activeInputLanguage == TranslationLanguage.english) {
-                        chatNotifier.sendEnglishText(text);
-                      } else {
-                        chatNotifier.sendJapaneseText(text);
-                      }
+                      pipelineNotifier.processText(
+                        text,
+                        explicitSourceLang: chatState.activeInputLanguage,
+                      );
                     },
                   ),
                 ],

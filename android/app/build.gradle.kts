@@ -32,6 +32,13 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    packaging {
+        jniLibs {
+            pickFirsts += "**/libonnxruntime.so"
+            pickFirsts += "**/libc++_shared.so"
+        }
+    }
 }
 
 kotlin {

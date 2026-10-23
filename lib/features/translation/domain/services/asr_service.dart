@@ -18,6 +18,9 @@ abstract class AsrService {
   /// Extracts the finalized speech segment audio samples.
   Float32List? popSpeechSegment();
 
+  /// Flushes whatever speech audio has been accumulated so far (for manual Done/Stop Speaking).
+  Float32List? flushSpeechSegment();
+
   /// Resets internal VAD state.
   void resetVad();
 

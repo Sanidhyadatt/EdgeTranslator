@@ -28,7 +28,6 @@ class SherpaAsrServiceImpl implements AsrService {
   bool _isInitialized = false;
   bool _isNativeModelActive = false;
   bool _isNativeVadActive = false;
-  int _mockCycle = 0;
 
   // Calibrated VAD state machine (1.5s endpointing at 16000Hz = 24000 samples)
   static const int _silenceTimeoutSamples = (1.5 * AppConstants.audioSampleRate) ~/ 1;
@@ -183,8 +182,24 @@ class SherpaAsrServiceImpl implements AsrService {
   void acceptVadWaveform(Float32List samples) {
     if (samples.isEmpty) return;
 
+    // Maintain a rolling buffer of accumulated speech (up to 30 seconds max)
+    if (_accumulatedSpeech.length + samples.length > 30 * AppConstants.audioSampleRate) {
+      _accumulatedSpeech.removeRange(0, samples.length);
+    }
+    _accumulatedSpeech.addAll(samples);
+
     if (_isNativeVadActive && _vad != null) {
-      _vad!.acceptWaveform(samples);
+      // Feed samples to Silero VAD in 512-sample chunks for optimal accuracy
+      int offset = 0;
+      while (offset + 512 <= samples.length) {
+        final window = samples.sublist(offset, offset + 512);
+        _vad!.acceptWaveform(window);
+        offset += 512;
+      }
+      if (offset < samples.length) {
+        _vad!.acceptWaveform(samples.sublist(offset));
+      }
+
       while (!_vad!.isEmpty()) {
         final segment = _vad!.front();
         _readySpeechSegments.add(segment.samples);
@@ -206,11 +221,9 @@ class SherpaAsrServiceImpl implements AsrService {
     if (isVoiceActive) {
       _userWasSpeaking = true;
       _consecutiveSilenceSamples = 0;
-      _accumulatedSpeech.addAll(samples);
     } else {
       if (_userWasSpeaking) {
         _consecutiveSilenceSamples += samples.length;
-        _accumulatedSpeech.addAll(samples);
 
         if (_consecutiveSilenceSamples >= _silenceTimeoutSamples) {
           AppLogger.info(
@@ -237,6 +250,21 @@ class SherpaAsrServiceImpl implements AsrService {
   Float32List? popSpeechSegment() {
     if (_readySpeechSegments.isEmpty) return null;
     return _readySpeechSegments.removeFirst();
+  }
+
+  @override
+  Float32List? flushSpeechSegment() {
+    if (_readySpeechSegments.isNotEmpty) {
+      return _readySpeechSegments.removeFirst();
+    }
+    if (_accumulatedSpeech.length > 4000) {
+      final flushed = Float32List.fromList(_accumulatedSpeech);
+      _accumulatedSpeech.clear();
+      _consecutiveSilenceSamples = 0;
+      _userWasSpeaking = false;
+      return flushed;
+    }
+    return null;
   }
 
   @override
@@ -276,9 +304,7 @@ class SherpaAsrServiceImpl implements AsrService {
         }
 
         AppLogger.info('ASRService', 'Whisper decoded: "$text" [Language: $detectedLang]');
-        if (text.isNotEmpty) {
-          return AsrResult(text: text, language: detectedLang.isEmpty ? 'en' : detectedLang);
-        }
+        return AsrResult(text: text, language: detectedLang.isEmpty ? 'en' : detectedLang);
       } catch (err, st) {
         AppLogger.error('ASRService', 'Native Whisper decoding error', err, st);
       } finally {
@@ -286,31 +312,7 @@ class SherpaAsrServiceImpl implements AsrService {
       }
     }
 
-    return _generateRealisticMultilingualTranscript(samples);
-  }
-
-  AsrResult _generateRealisticMultilingualTranscript(Float32List samples) {
-    final durationSeconds = samples.length / AppConstants.audioSampleRate;
-    final isEnglish = (_mockCycle % 2 == 0);
-    _mockCycle++;
-
-    if (isEnglish) {
-      if (durationSeconds < 2.0) {
-        return const AsrResult(text: 'Hello!', language: 'en');
-      } else if (durationSeconds < 3.5) {
-        return const AsrResult(text: 'Where is Shibuya station?', language: 'en');
-      } else {
-        return const AsrResult(text: 'Could you tell me how to get to the train station?', language: 'en');
-      }
-    } else {
-      if (durationSeconds < 2.0) {
-        return const AsrResult(text: 'こんにちは！', language: 'ja');
-      } else if (durationSeconds < 3.5) {
-        return const AsrResult(text: '渋谷駅はどこにありますか？', language: 'ja');
-      } else {
-        return const AsrResult(text: '最寄りの駅への行き方を教えていただけますか？', language: 'ja');
-      }
-    }
+    return const AsrResult(text: '', language: 'en');
   }
 
   @override

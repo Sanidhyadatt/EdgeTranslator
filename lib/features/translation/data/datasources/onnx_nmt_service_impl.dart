@@ -173,9 +173,11 @@ class OnnxNmtServiceImpl implements NmtService {
           vocab: _enJaVocab,
           reverseVocab: _enJaReverseVocab,
         );
-        if (result.isNotEmpty) {
+        if (_isValidTranslation(result)) {
           AppLogger.info('OnnxNmtService', 'EN->JA ONNX translated: "$clean" -> "$result"');
           return result;
+        } else {
+          AppLogger.warning('OnnxNmtService', 'EN->JA ONNX translation degraded ("$result"), using fallback.');
         }
       } catch (err, st) {
         AppLogger.error('OnnxNmtService', 'EN->JA ONNX runtime inference exception', err, st);
@@ -189,9 +191,11 @@ class OnnxNmtServiceImpl implements NmtService {
           vocab: _jaEnVocab,
           reverseVocab: _jaEnReverseVocab,
         );
-        if (result.isNotEmpty) {
+        if (_isValidTranslation(result)) {
           AppLogger.info('OnnxNmtService', 'JA->EN ONNX translated: "$clean" -> "$result"');
           return result;
+        } else {
+          AppLogger.warning('OnnxNmtService', 'JA->EN ONNX translation degraded ("$result"), using fallback.');
         }
       } catch (err, st) {
         AppLogger.error('OnnxNmtService', 'JA->EN ONNX runtime inference exception', err, st);
@@ -200,6 +204,27 @@ class OnnxNmtServiceImpl implements NmtService {
 
     // 2. Fallback Translation for headless test environments or pending model initialization
     return _fallbackTranslate(clean, sourceLang: sourceLang, targetLang: targetLang);
+  }
+
+  bool _isValidTranslation(String result) {
+    final trimmed = result.trim();
+    if (trimmed.isEmpty) return false;
+    if (trimmed.contains('????') || trimmed.contains('\u2581') || trimmed.contains('▁')) return false;
+
+    // Reject pathological repetitive degeneration (e.g., "spirit spirit spirit")
+    final words = trimmed.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '').split(RegExp(r'\s+'));
+    if (words.length >= 3) {
+      int repeatCount = 0;
+      for (int i = 1; i < words.length; i++) {
+        if (words[i].isNotEmpty && words[i] == words[i - 1]) {
+          repeatCount++;
+          if (repeatCount >= 2) return false;
+        } else {
+          repeatCount = 0;
+        }
+      }
+    }
+    return true;
   }
 
   Future<String> _runOnnxTranslation(
@@ -297,12 +322,20 @@ class OnnxNmtServiceImpl implements NmtService {
 
   List<int> _tokenize(String text, Map<String, int> vocab) {
     if (vocab.isEmpty) return [0];
-    final normalized = text.replaceAll(RegExp(r'\s+'), ' ').trim();
+    final normalized = text
+        .replaceAll('？', '?')
+        .replaceAll('！', '!')
+        .replaceAll('、', ',')
+        .replaceAll('。', '.')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
     if (normalized.isEmpty) return [vocab['</s>'] ?? 0];
 
     final tokenIds = <int>[];
     final unkTokenId = vocab['<unk>'] ?? 1;
     final eosTokenId = vocab['</s>'] ?? 0;
+    const spPrefix1 = '\u2581';
+    const spPrefix2 = '▁';
 
     int pos = 0;
     while (pos < normalized.length) {
@@ -310,9 +343,17 @@ class OnnxNmtServiceImpl implements NmtService {
       final maxLen = min(30, normalized.length - pos);
       for (int len = maxLen; len >= 1; len--) {
         final sub = normalized.substring(pos, pos + len);
-        final withPrefix = ' $sub';
-        if (pos == 0 && vocab.containsKey(withPrefix)) {
-          tokenIds.add(vocab[withPrefix]!);
+        final withSp1 = '$spPrefix1$sub';
+        final withSp2 = '$spPrefix2$sub';
+        final withSpace = ' $sub';
+
+        if (pos == 0 && (vocab.containsKey(withSp1) || vocab.containsKey(withSp2))) {
+          tokenIds.add(vocab[withSp1] ?? vocab[withSp2]!);
+          pos += len;
+          matched = true;
+          break;
+        } else if (pos == 0 && vocab.containsKey(withSpace)) {
+          tokenIds.add(vocab[withSpace]!);
           pos += len;
           matched = true;
           break;
@@ -321,8 +362,13 @@ class OnnxNmtServiceImpl implements NmtService {
           pos += len;
           matched = true;
           break;
-        } else if (vocab.containsKey(withPrefix)) {
-          tokenIds.add(vocab[withPrefix]!);
+        } else if (vocab.containsKey(withSp1) || vocab.containsKey(withSp2)) {
+          tokenIds.add(vocab[withSp1] ?? vocab[withSp2]!);
+          pos += len;
+          matched = true;
+          break;
+        } else if (vocab.containsKey(withSpace)) {
+          tokenIds.add(vocab[withSpace]!);
           pos += len;
           matched = true;
           break;
@@ -344,7 +390,7 @@ class OnnxNmtServiceImpl implements NmtService {
     for (final id in tokenIds) {
       final tok = reverseVocab[id] ?? '';
       if (tok == '</s>' || tok == '<pad>') continue;
-      if (tok.startsWith(' ')) {
+      if (tok.startsWith('\u2581') || tok.startsWith('▁') || tok.startsWith(' ')) {
         if (buffer.isNotEmpty) buffer.write(' ');
         buffer.write(tok.substring(1));
       } else {

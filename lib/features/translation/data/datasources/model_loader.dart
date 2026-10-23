@@ -408,8 +408,15 @@ class ModelLoader {
       'tts/lexicon.txt',
     ]);
 
+    final enLexicon = _resolveCandidateFile(baseDir, [
+      'tts_en/lexicon.txt',
+      'lexicon.txt',
+      'tts/lexicon.txt',
+    ]);
+
     final enModelPath = p.normalize(p.absolute(enModel.path));
     final enTokensPath = p.normalize(p.absolute(enTokens.path));
+    final enLexiconPath = enLexicon.existsSync() ? p.normalize(p.absolute(enLexicon.path)) : null;
     final jaModelPath = p.normalize(p.absolute(jaModel.path));
     final jaTokensPath = p.normalize(p.absolute(jaTokens.path));
     final jaLexiconPath = jaLexicon.existsSync() ? p.normalize(p.absolute(jaLexicon.path)) : null;
@@ -424,6 +431,7 @@ class ModelLoader {
       en: TtsDirectionModelPaths(
         modelPath: enModelPath,
         tokensPath: enTokensPath,
+        lexiconPath: enLexiconPath,
       ),
       ja: TtsDirectionModelPaths(
         modelPath: jaModelPath,
