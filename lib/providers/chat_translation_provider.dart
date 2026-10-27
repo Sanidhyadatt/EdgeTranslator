@@ -1,10 +1,11 @@
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/services/translation_service.dart';
 import '../core/utils/app_logger.dart';
 import '../features/translation/domain/models/chat_message.dart';
 
-/// State of the Google ML Kit translation chat.
+/// State of the translation chat.
 class ChatTranslationState {
   final bool isLoading;
   final String? loadingMessage;
@@ -43,7 +44,7 @@ class ChatTranslationState {
   }
 }
 
-/// Riverpod Notifier managing Google ML Kit offline translation state and history.
+/// Riverpod Notifier managing offline translation state and history.
 class ChatTranslationNotifier extends Notifier<ChatTranslationState> {
   bool _disposed = false;
 
@@ -54,57 +55,16 @@ class ChatTranslationNotifier extends Notifier<ChatTranslationState> {
       _disposed = true;
     });
 
-    // Check whether offline models are already cached on device
-    Future.microtask(() {
-      if (!_disposed) {
-        checkModelsDownloaded();
+    // Warm up the bundled on-device engine in the background (no download involved).
+    Future.microtask(() async {
+      if (_disposed) return;
+      try {
+        await ref.read(translationServiceProvider).initializeModels();
+      } catch (e) {
+        AppLogger.warning('ChatTranslationNotifier', 'Engine warm-up notice: $e');
       }
     });
-    return const ChatTranslationState();
-  }
-
-  /// Verifies if the English and Japanese ML Kit models are downloaded on the device.
-  Future<bool> checkModelsDownloaded() async {
-    if (_disposed) return false;
-    try {
-      final translationService = ref.read(translationServiceProvider);
-      final downloaded = await translationService.areModelsDownloaded();
-      if (!_disposed) {
-        state = state.copyWith(areModelsDownloaded: downloaded);
-      }
-      return downloaded;
-    } catch (_) {
-      return false;
-    }
-  }
-
-  /// Downloads the English and Japanese model packs using OnDeviceTranslatorModelManager.
-  Future<void> downloadModels() async {
-    if (state.isLoading) return;
-
-    state = state.copyWith(
-      isLoading: true,
-      loadingMessage: 'Downloading offline ML Kit models (EN & JA)...',
-      clearError: true,
-    );
-
-    try {
-      final translationService = ref.read(translationServiceProvider);
-      await translationService.initializeModels();
-      state = state.copyWith(
-        isLoading: false,
-        areModelsDownloaded: true,
-        clearLoadingMessage: true,
-      );
-      AppLogger.info('ChatTranslationNotifier', 'ML Kit models downloaded and ready.');
-    } catch (e, st) {
-      AppLogger.error('ChatTranslationNotifier', 'Failed to download models', e, st);
-      state = state.copyWith(
-        isLoading: false,
-        errorMessage: 'Failed to download translation models: $e',
-        clearLoadingMessage: true,
-      );
-    }
+    return const ChatTranslationState(areModelsDownloaded: true);
   }
 
   /// Sends English text:
@@ -129,7 +89,7 @@ class ChatTranslationNotifier extends Notifier<ChatTranslationState> {
 
     state = state.copyWith(
       isLoading: true,
-      loadingMessage: 'Translating to Japanese (OnDeviceTranslator)...',
+      loadingMessage: 'Translating to Japanese (on-device)...',
       messages: [...state.messages, initialMessage],
       clearError: true,
     );
@@ -191,7 +151,7 @@ class ChatTranslationNotifier extends Notifier<ChatTranslationState> {
 
     state = state.copyWith(
       isLoading: true,
-      loadingMessage: 'Translating to English (OnDeviceTranslator)...',
+      loadingMessage: 'Translating to English (on-device)...',
       messages: [...state.messages, initialMessage],
       clearError: true,
     );

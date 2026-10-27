@@ -7,12 +7,10 @@ import '../../../../providers/chat_translation_provider.dart';
 import '../../../../providers/translation_pipeline_provider.dart';
 import '../../domain/models/chat_message.dart';
 import '../widgets/chat_log_view.dart';
-import '../widgets/continuous_listening_toggle.dart';
-import '../widgets/hold_to_talk_button.dart';
-import '../widgets/manual_text_input_bar.dart';
 import '../widgets/status_banner.dart';
+import '../widgets/unified_input_bar.dart';
 
-/// Main screen showcasing ML Kit offline chat translation, continuous VAD,
+/// Main screen showcasing on-device offline chat translation, continuous VAD,
 /// language toggle, dual send buttons, and offline model management.
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -25,7 +23,7 @@ class HomeScreen extends ConsumerWidget {
     final chatState = ref.watch(chatTranslationProvider);
     final chatNotifier = ref.read(chatTranslationProvider.notifier);
 
-    // Merge messages from ML Kit Chat and VAD Voice pipeline for a unified conversation history
+    // Merge messages from Chat and VAD Voice pipeline for a unified conversation history
     final allMessages = [
       ...chatState.messages,
       ...pipelineState.messages,
@@ -51,9 +49,6 @@ class HomeScreen extends ConsumerWidget {
           ],
         ),
         actions: [
-          // "Download Models" Button or Ready Badge
-          _buildModelStatusAction(context, chatState, chatNotifier),
-          const SizedBox(width: 8),
           // 100% Offline Badge
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -101,10 +96,6 @@ class HomeScreen extends ConsumerWidget {
       body: SafeArea(
         child: Column(
           children: [
-            // Prominent Model Download Banner if models are not yet downloaded
-            if (!chatState.areModelsDownloaded)
-              _buildDownloadBanner(context, chatState, chatNotifier),
-
             // Active Loading Progress Indicator (e.g. downloading models or translating)
             if (chatState.isLoading)
               Container(
@@ -124,7 +115,7 @@ class HomeScreen extends ConsumerWidget {
                     const SizedBox(width: 10),
                     Expanded(
                       child: Text(
-                        chatState.loadingMessage ?? 'Processing with Google ML Kit...',
+                        chatState.loadingMessage ?? 'Translating on-device...',
                         style: const TextStyle(
                           fontSize: 12,
                           fontWeight: FontWeight.w600,
@@ -155,8 +146,9 @@ class HomeScreen extends ConsumerWidget {
             ),
 
             // Bottom Controls Area
+            // Bottom Controls Area: Minimal, simplified Unified Translation Input Bar
             Container(
-              padding: const EdgeInsets.fromLTRB(16, 10, 16, 16),
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
               decoration: BoxDecoration(
                 color: AppTheme.background,
                 boxShadow: [
@@ -167,283 +159,24 @@ class HomeScreen extends ConsumerWidget {
                   ),
                 ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  // If continuous listening is active, show the quick control bar
-                  if (pipelineState.isContinuousListening) ...[
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 10),
-                      child: Row(
-                        children: [
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppTheme.errorRose,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              ),
-                              icon: const Icon(Icons.stop_circle_outlined, size: 20),
-                              label: const Text(
-                                'Stop Hearing',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                              ),
-                              onPressed: () => pipelineNotifier.stopHearing(),
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: ElevatedButton.icon(
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: AppTheme.successEmerald,
-                                foregroundColor: Colors.white,
-                                elevation: 0,
-                                padding: const EdgeInsets.symmetric(vertical: 12),
-                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-                              ),
-                              icon: const Icon(Icons.check_circle_outline_rounded, size: 20),
-                              label: const Text(
-                                'Done Speaking',
-                                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
-                              ),
-                              onPressed: () => pipelineNotifier.doneSpeakingNow(),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-
-                  // Continuous Hands-Free Listening Toggle Switch (Silero VAD)
-                  ContinuousListeningToggle(
-                    isListening: pipelineState.isContinuousListening,
-                    status: pipelineState.status,
-                    onToggle: () => pipelineNotifier.toggleContinuousListening(),
-                  ),
-                  const SizedBox(height: 10),
-
-                  // Push-to-Talk / Hold-to-Talk buttons for direct manual speech
-                  if (!pipelineState.isContinuousListening) ...[
-                    Row(
-                      children: [
-                        Expanded(
-                          child: HoldToTalkButton(
-                            language: TranslationLanguage.english,
-                            isRecording: pipelineState.status == PipelineStatus.recording &&
-                                pipelineState.activeLanguage == TranslationLanguage.english,
-                            isProcessing: pipelineState.status.isProcessing,
-                            isOtherActive: pipelineState.status == PipelineStatus.recording &&
-                                pipelineState.activeLanguage != TranslationLanguage.english,
-                            onHoldStart: () => pipelineNotifier.startPushToTalk(TranslationLanguage.english),
-                            onHoldEnd: () => pipelineNotifier.stopPushToTalk(TranslationLanguage.english),
-                            onHoldCancel: () => pipelineNotifier.cancelPushToTalk(),
-                          ),
-                        ),
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: HoldToTalkButton(
-                            language: TranslationLanguage.japanese,
-                            isRecording: pipelineState.status == PipelineStatus.recording &&
-                                pipelineState.activeLanguage == TranslationLanguage.japanese,
-                            isProcessing: pipelineState.status.isProcessing,
-                            isOtherActive: pipelineState.status == PipelineStatus.recording &&
-                                pipelineState.activeLanguage != TranslationLanguage.japanese,
-                            onHoldStart: () => pipelineNotifier.startPushToTalk(TranslationLanguage.japanese),
-                            onHoldEnd: () => pipelineNotifier.stopPushToTalk(TranslationLanguage.japanese),
-                            onHoldCancel: () => pipelineNotifier.cancelPushToTalk(),
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                  ],
-
-                  // Manual Text Input Bar (translates with Google ML Kit & reads aloud with TTS)
-                  ManualTextInputBar(
-                    isBusy: pipelineState.status.isBusy || chatState.isLoading,
-                    activeLanguage: chatState.activeInputLanguage,
-                    onLanguageChanged: (lang) => chatNotifier.setInputLanguage(lang),
-                    onSendEnglish: (text) => pipelineNotifier.processText(
-                      text,
-                      explicitSourceLang: TranslationLanguage.english,
-                    ),
-                    onSendJapanese: (text) => pipelineNotifier.processText(
-                      text,
-                      explicitSourceLang: TranslationLanguage.japanese,
-                    ),
-                    onSubmit: (text) {
-                      pipelineNotifier.processText(
-                        text,
-                        explicitSourceLang: chatState.activeInputLanguage,
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildModelStatusAction(
-    BuildContext context,
-    ChatTranslationState state,
-    ChatTranslationNotifier notifier,
-  ) {
-    if (state.isLoading && state.loadingMessage?.contains('model') == true) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: AppTheme.primaryBlue.withValues(alpha: 0.15),
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppTheme.primaryBlue.withValues(alpha: 0.4)),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            SizedBox(
-              width: 12,
-              height: 12,
-              child: CircularProgressIndicator(strokeWidth: 2, color: AppTheme.primaryNeon),
-            ),
-            SizedBox(width: 6),
-            Text(
-              'Downloading...',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.primaryNeon,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (state.areModelsDownloaded) {
-      return Container(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        decoration: BoxDecoration(
-          color: AppTheme.surfaceElevated,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: AppTheme.cardBorder),
-        ),
-        child: const Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(Icons.check_circle_outline_rounded, size: 14, color: AppTheme.successEmerald),
-            SizedBox(width: 4),
-            Text(
-              'Models Ready',
-              style: TextStyle(
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                color: AppTheme.textSecondary,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    // "Download Models" Button
-    return ElevatedButton.icon(
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppTheme.primaryNeon,
-        foregroundColor: const Color(0xFF0B0F17),
-        elevation: 0,
-        visualDensity: VisualDensity.compact,
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      ),
-      icon: const Icon(Icons.download_rounded, size: 14),
-      label: const Text(
-        'Download Models',
-        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-      ),
-      onPressed: () => notifier.downloadModels(),
-    );
-  }
-
-  Widget _buildDownloadBanner(
-    BuildContext context,
-    ChatTranslationState state,
-    ChatTranslationNotifier notifier,
-  ) {
-    return Container(
-      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.surfaceElevated,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: AppTheme.primaryNeon.withValues(alpha: 0.35)),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primaryNeon.withValues(alpha: 0.08),
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Row(
-        children: [
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppTheme.primaryNeon.withValues(alpha: 0.15),
-            ),
-            child: const Icon(
-              Icons.cloud_download_rounded,
-              color: AppTheme.primaryNeon,
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 12),
-          const Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Offline ML Kit Models Required',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textPrimary,
-                  ),
+              child: UnifiedInputBar(
+                activeLanguage: pipelineState.activeLanguage,
+                onLanguageChanged: (lang) {
+                  pipelineNotifier.setLanguage(lang);
+                  chatNotifier.setInputLanguage(lang);
+                },
+                onSend: (text) => pipelineNotifier.processText(
+                  text,
+                  explicitSourceLang: pipelineState.activeLanguage,
                 ),
-                SizedBox(height: 2),
-                Text(
-                  'Download EN & JA offline model packs to enable real-time translation.',
-                  style: TextStyle(
-                    fontSize: 11,
-                    color: AppTheme.textSecondary,
-                  ),
-                ),
-              ],
+                onMicTap: () => pipelineNotifier.toggleVoiceListening(),
+                isRecording: pipelineState.status == PipelineStatus.recording,
+                isBusy: pipelineState.status.isBusy,
+                interimText: pipelineState.interimTranscript,
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          ElevatedButton.icon(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.primaryNeon,
-              foregroundColor: const Color(0xFF0B0F17),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-              elevation: 0,
-            ),
-            icon: const Icon(Icons.download_rounded, size: 14),
-            label: const Text(
-              'Download Models',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-            ),
-            onPressed: state.isLoading ? null : () => notifier.downloadModels(),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }

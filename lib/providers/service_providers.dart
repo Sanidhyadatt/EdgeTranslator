@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:record/record.dart';
 
 import '../core/services/audio_service.dart';
+import '../core/services/speech_recognition_service.dart';
+import '../core/services/tts_player_service.dart';
 import '../features/translation/data/datasources/mlkit_nmt_service_impl.dart';
 import '../features/translation/data/datasources/model_loader.dart';
 import '../features/translation/data/datasources/sherpa_asr_service_impl.dart';
@@ -13,6 +15,20 @@ import '../features/translation/domain/services/nmt_service.dart';
 import '../features/translation/domain/services/tts_service.dart';
 import '../core/services/translation_service.dart';
 export '../core/services/translation_service.dart';
+
+/// Provider for universal Text-to-Speech audio readout across all platforms.
+final ttsPlayerServiceProvider = Provider<TtsPlayerService>((ref) {
+  final service = TtsPlayerService();
+  ref.onDispose(() => service.dispose());
+  return service;
+});
+
+/// Provider for universal Speech-to-Text voice recognition across all platforms.
+final speechRecognitionServiceProvider = Provider<SpeechRecognitionService>((ref) {
+  final service = SpeechRecognitionService();
+  ref.onDispose(() => service.dispose());
+  return service;
+});
 
 /// Provider for microphone audio capture service (16kHz PCM Float32).
 final audioServiceProvider = Provider<AudioService>((ref) {

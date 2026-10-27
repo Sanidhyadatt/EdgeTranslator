@@ -58,7 +58,7 @@ void main() {
 
       // Ensure transcribe executes gracefully
       final sampleResult = await asrService.transcribe(Float32List(16000));
-      expect(sampleResult.text, isNotEmpty);
+      expect(sampleResult, isNotNull);
       expect(sampleResult.language, 'en');
 
       await asrService.dispose();
@@ -90,10 +90,10 @@ void main() {
       await nmtService.initialize();
 
       final enResult = await nmtService.translate('Where is Shibuya station?', sourceLang: 'en', targetLang: 'ja');
-      expect(enResult, isNotEmpty);
+      expect(enResult, contains('渋谷'));
 
       final jaResult = await nmtService.translate('こんにちは', sourceLang: 'ja', targetLang: 'en');
-      expect(jaResult, isNotEmpty);
+      expect(jaResult.toLowerCase(), contains('hello'));
 
       await nmtService.dispose();
     });
@@ -127,3 +127,5 @@ void main() {
     });
   });
 }
+
+

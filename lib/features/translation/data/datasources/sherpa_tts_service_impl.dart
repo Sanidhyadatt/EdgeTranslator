@@ -2,6 +2,7 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
@@ -35,6 +36,10 @@ class SherpaTtsServiceImpl implements TtsService {
   @override
   Future<void> initialize() async {
     if (_initialized) return;
+    if (kIsWeb) {
+      _initialized = true;
+      return;
+    }
 
     try {
       try {
@@ -163,6 +168,7 @@ class SherpaTtsServiceImpl implements TtsService {
     String language = 'ja',
     double speed = 1.0,
   }) async {
+    if (kIsWeb) return '';
     if (!_initialized) {
       await initialize();
     }
@@ -212,6 +218,7 @@ class SherpaTtsServiceImpl implements TtsService {
 
   /// Writes Float32 PCM audio samples to a standard 16-bit PCM .wav file.
   Future<String> _saveToWavFile(Float32List samples, int sampleRate, String prefix) async {
+    if (kIsWeb) return '';
     final tempDir = Directory.systemTemp;
     final timestamp = DateTime.now().millisecondsSinceEpoch;
     final wavFile = File(p.join(tempDir.path, '${prefix}_$timestamp.wav'));

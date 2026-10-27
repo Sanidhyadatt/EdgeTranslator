@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -102,6 +103,7 @@ class ModelLoader {
   /// Gets the local directory reserved for on-device machine learning models
   /// in the device's application document directory.
   Future<Directory> get modelsDirectory async {
+    if (kIsWeb) return Directory('');
     Directory appDocDir;
     try {
       appDocDir = await getApplicationDocumentsDirectory();
@@ -119,6 +121,7 @@ class ModelLoader {
   /// Extracts .onnx, .spm, .json, and .txt model files from the Flutter asset bundle to
   /// the device's application documents directory at runtime.
   Future<List<File>> extractModelAssets({bool overwrite = false}) async {
+    if (kIsWeb) return [];
     final baseDir = await modelsDirectory;
     final List<File> extractedFiles = [];
 
@@ -452,6 +455,7 @@ class ModelLoader {
 
   /// Ensures models directory is created and extracts all model files from asset bundle.
   Future<List<File>> ensureModelsExtracted({bool overwrite = false}) async {
+    if (kIsWeb) return [];
     final base = await modelsDirectory;
     AppLogger.info('ModelLoader', 'Models local directory ready: ${base.path}');
     return await extractModelAssets(overwrite: overwrite);

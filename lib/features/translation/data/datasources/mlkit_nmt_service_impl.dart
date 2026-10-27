@@ -2,7 +2,7 @@ import '../../../../core/services/translation_service.dart';
 import '../../../../core/utils/app_logger.dart';
 import '../../domain/services/nmt_service.dart';
 
-/// Neural Machine Translation implementation powered by Google ML Kit OnDeviceTranslator.
+/// Neural Machine Translation implementation backed by the bundled on-device ONNX models (no download).
 class MlKitNmtServiceImpl implements NmtService {
   final TranslationService translationService;
 
@@ -10,7 +10,7 @@ class MlKitNmtServiceImpl implements NmtService {
 
   @override
   Future<void> initialize() async {
-    AppLogger.info('MlKitNmtService', 'Initializing Google ML Kit translation models (EN & JA)...');
+    AppLogger.info('MlKitNmtService', 'Initializing bundled offline translation models (EN & JA)...');
     await translationService.initializeModels(isWifiRequired: false);
   }
 
@@ -23,7 +23,7 @@ class MlKitNmtServiceImpl implements NmtService {
     final clean = text.trim();
     if (clean.isEmpty) return '';
 
-    final isEnToJa = sourceLang.toLowerCase() == 'en' || targetLang.toLowerCase() == 'ja';
+    final isEnToJa = sourceLang.toLowerCase().startsWith('en');
     if (isEnToJa) {
       return await translationService.translateToJapanese(clean);
     } else {

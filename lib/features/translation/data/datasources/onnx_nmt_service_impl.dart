@@ -1,16 +1,42 @@
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 
 import '../../../../core/utils/app_logger.dart';
 import '../../domain/services/nmt_service.dart';
 import 'model_loader.dart';
+import 'sentencepiece_model.dart';
 
-/// Offline Neural Machine Translation (NMT) service using MarianMT ONNX runtime sessions.
+/// Everything needed to translate in a single direction.
+class _DirectionEngine {
+  final OrtSession encoder;
+  final OrtSession decoder;
+  final Map<String, int> vocab;
+  final Map<int, String> reverseVocab;
+  final SentencePieceModel sourceSpm;
+
+  _DirectionEngine({
+    required this.encoder,
+    required this.decoder,
+    required this.vocab,
+    required this.reverseVocab,
+    required this.sourceSpm,
+  });
+
+  void release() {
+    try {
+      encoder.release();
+      decoder.release();
+    } catch (_) {}
+  }
+}
+
+/// 100% on-device Neural Machine Translation using the MarianMT ONNX models that
+/// ship inside the app bundle (`assets/models/nmt_en_ja` and `nmt_ja_en`).
 ///
-/// Supports bidirectional English <-> Japanese sequence-to-sequence translation
-/// using quantized encoder/decoder ONNX models and vocabulary mappings.
+/// No network access and no model download is ever required: the encoder/decoder
+/// weights, SentencePiece tokenizers and vocabularies are pre-installed assets.
 class OnnxNmtServiceImpl implements NmtService {
   final ModelLoader _modelLoader;
   final String? enJaEncoderPath;
@@ -19,18 +45,13 @@ class OnnxNmtServiceImpl implements NmtService {
   final String? jaEnDecoderPath;
 
   bool _initialized = false;
-  bool _isEnJaNativeActive = false;
-  bool _isJaEnNativeActive = false;
+  Future<void>? _initFuture;
 
-  OrtSession? _enJaEncoderSession;
-  OrtSession? _enJaDecoderSession;
-  Map<String, int> _enJaVocab = {};
-  Map<int, String> _enJaReverseVocab = {};
+  _DirectionEngine? _enJa;
+  _DirectionEngine? _jaEn;
 
-  OrtSession? _jaEnEncoderSession;
-  OrtSession? _jaEnDecoderSession;
-  Map<String, int> _jaEnVocab = {};
-  Map<int, String> _jaEnReverseVocab = {};
+  /// True once at least one direction has real ONNX weights loaded.
+  bool get isReady => _enJa != null || _jaEn != null;
 
   OnnxNmtServiceImpl({
     ModelLoader? modelLoader,
@@ -41,13 +62,18 @@ class OnnxNmtServiceImpl implements NmtService {
   }) : _modelLoader = modelLoader ?? const ModelLoader();
 
   @override
-  Future<void> initialize() async {
-    if (_initialized) return;
+  Future<void> initialize() {
+    if (_initialized) return Future.value();
+    return _initFuture ??= _doInitialize().whenComplete(() {
+      _initialized = true;
+      _initFuture = null;
+    });
+  }
 
-    AppLogger.info('OnnxNmtService', 'Initializing MarianMT ONNX translation runtime engines...');
+  Future<void> _doInitialize() async {
+    AppLogger.info('OnnxNmtService', 'Initializing offline MarianMT ONNX translation engines...');
 
     try {
-      // 1. Ensure models and dictionary assets are extracted to local document storage
       try {
         await _modelLoader.extractModelAssets();
       } catch (e) {
@@ -56,100 +82,95 @@ class OnnxNmtServiceImpl implements NmtService {
 
       final nmtPaths = await _modelLoader.getNmtModelPaths();
 
-      // 2. Initialize OrtEnv
       try {
         OrtEnv.instance.init();
       } catch (_) {
         // OrtEnv might already be initialized by another subsystem
       }
 
-      final sessionOptions = OrtSessionOptions();
-
-      // 3. Initialize EN -> JA MarianMT ONNX Sessions
-      final effectiveEnJaEnc = enJaEncoderPath ?? nmtPaths.enJa.encoderPath;
-      final effectiveEnJaDec = enJaDecoderPath ?? nmtPaths.enJa.decoderPath;
-      final enJaEncFile = File(effectiveEnJaEnc);
-      final enJaDecFile = File(effectiveEnJaDec);
-
-      if (await enJaEncFile.exists() && await enJaDecFile.exists()) {
-        try {
-          _enJaEncoderSession = await _createSession(enJaEncFile, sessionOptions);
-          _enJaDecoderSession = await _createSession(enJaDecFile, sessionOptions);
-          await _loadVocabulary(nmtPaths.enJa.vocabJsonPath, isEnJa: true);
-          _isEnJaNativeActive = true;
-          AppLogger.info('OnnxNmtService', 'MarianMT EN->JA ONNX sessions initialized.');
-        } catch (e, st) {
-          AppLogger.error('OnnxNmtService', 'Could not initialize EN->JA ONNX session from $effectiveEnJaEnc', e, st);
-        }
-      } else {
-        AppLogger.info('OnnxNmtService', 'EN->JA ONNX model weights not yet found at: $effectiveEnJaEnc');
-      }
-
-      // 4. Initialize JA -> EN MarianMT ONNX Sessions
-      final effectiveJaEnEnc = jaEnEncoderPath ?? nmtPaths.jaEn.encoderPath;
-      final effectiveJaEnDec = jaEnDecoderPath ?? nmtPaths.jaEn.decoderPath;
-      final jaEnEncFile = File(effectiveJaEnEnc);
-      final jaEnDecFile = File(effectiveJaEnDec);
-
-      if (await jaEnEncFile.exists() && await jaEnDecFile.exists()) {
-        try {
-          _jaEnEncoderSession = await _createSession(jaEnEncFile, sessionOptions);
-          _jaEnDecoderSession = await _createSession(jaEnDecFile, sessionOptions);
-          await _loadVocabulary(nmtPaths.jaEn.vocabJsonPath, isEnJa: false);
-          _isJaEnNativeActive = true;
-          AppLogger.info('OnnxNmtService', 'MarianMT JA->EN ONNX sessions initialized.');
-        } catch (e, st) {
-          AppLogger.error('OnnxNmtService', 'Could not initialize JA->EN ONNX session from $effectiveJaEnEnc', e, st);
-        }
-      } else {
-        AppLogger.info('OnnxNmtService', 'JA->EN ONNX model weights not yet found at: $effectiveJaEnEnc');
-      }
+      _enJa = await _loadDirection(
+        label: 'EN->JA',
+        encoderPath: enJaEncoderPath ?? nmtPaths.enJa.encoderPath,
+        decoderPath: enJaDecoderPath ?? nmtPaths.enJa.decoderPath,
+        vocabPath: nmtPaths.enJa.vocabJsonPath,
+        sourceSpmPath: nmtPaths.enJa.sourceSpmPath,
+      );
+      _jaEn = await _loadDirection(
+        label: 'JA->EN',
+        encoderPath: jaEnEncoderPath ?? nmtPaths.jaEn.encoderPath,
+        decoderPath: jaEnDecoderPath ?? nmtPaths.jaEn.decoderPath,
+        vocabPath: nmtPaths.jaEn.vocabJsonPath,
+        sourceSpmPath: nmtPaths.jaEn.sourceSpmPath,
+      );
     } catch (e, st) {
       AppLogger.error('OnnxNmtService', 'Initialization error in MarianMT ONNX translation engine', e, st);
     }
+  }
 
-    _initialized = true;
+  Future<_DirectionEngine?> _loadDirection({
+    required String label,
+    required String encoderPath,
+    required String decoderPath,
+    required String? vocabPath,
+    required String? sourceSpmPath,
+  }) async {
+    final encFile = File(encoderPath);
+    final decFile = File(decoderPath);
+    if (!await encFile.exists() || !await decFile.exists()) {
+      AppLogger.warning('OnnxNmtService', '$label ONNX weights not found at: $encoderPath');
+      return null;
+    }
+    if (vocabPath == null || sourceSpmPath == null) return null;
+    final vocabFile = File(vocabPath);
+    final spmFile = File(sourceSpmPath);
+    if (!await vocabFile.exists() || !await spmFile.exists()) {
+      AppLogger.warning('OnnxNmtService', '$label vocabulary / SentencePiece model missing.');
+      return null;
+    }
+
+    try {
+      final map = jsonDecode(await vocabFile.readAsString()) as Map<String, dynamic>;
+      final vocab = map.map((k, v) => MapEntry(k, (v as num).toInt()));
+      final reverse = <int, String>{for (final e in vocab.entries) e.value: e.key};
+      final spm = SentencePieceModel.parse(await spmFile.readAsBytes());
+
+      final options = OrtSessionOptions();
+      final encoder = await _createSession(encFile, options);
+      final decoder = await _createSession(decFile, options);
+
+      AppLogger.info(
+        'OnnxNmtService',
+        '$label ready: ${vocab.length} vocab tokens, ${spm.vocabSize} SentencePiece pieces.',
+      );
+      return _DirectionEngine(
+        encoder: encoder,
+        decoder: decoder,
+        vocab: vocab,
+        reverseVocab: reverse,
+        sourceSpm: spm,
+      );
+    } catch (e, st) {
+      AppLogger.error('OnnxNmtService', 'Could not initialize $label ONNX engine', e, st);
+      return null;
+    }
   }
 
   Future<OrtSession> _createSession(File file, OrtSessionOptions options) async {
     if (Platform.isWindows) {
-      // On Windows, OrtSession.fromBuffer uses CreateSessionFromArray to reliably avoid path encoding issues.
+      // On Windows, OrtSession.fromBuffer avoids path encoding issues.
       final bytes = await file.readAsBytes();
       return OrtSession.fromBuffer(bytes, options);
-    } else {
-      try {
-        return OrtSession.fromFile(file, options);
-      } catch (_) {
-        final bytes = await file.readAsBytes();
-        return OrtSession.fromBuffer(bytes, options);
-      }
     }
-  }
-
-  Future<void> _loadVocabulary(String? vocabPath, {required bool isEnJa}) async {
-    if (vocabPath == null) return;
-    final file = File(vocabPath);
-    if (!await file.exists()) return;
-
     try {
-      final jsonStr = await file.readAsString();
-      final map = jsonDecode(jsonStr) as Map<String, dynamic>;
-      final vocab = map.map((k, v) => MapEntry(k, (v as num).toInt()));
-      final reverse = Map.fromEntries(vocab.entries.map((e) => MapEntry(e.value, e.key)));
-
-      if (isEnJa) {
-        _enJaVocab = vocab;
-        _enJaReverseVocab = reverse;
-      } else {
-        _jaEnVocab = vocab;
-        _jaEnReverseVocab = reverse;
-      }
-      AppLogger.info('OnnxNmtService', 'Loaded ${vocab.length} vocabulary tokens from: $vocabPath');
-    } catch (e) {
-      AppLogger.error('OnnxNmtService', 'Failed parsing vocabulary at $vocabPath: $e');
+      return OrtSession.fromFile(file, options);
+    } catch (_) {
+      final bytes = await file.readAsBytes();
+      return OrtSession.fromBuffer(bytes, options);
     }
   }
 
+  /// Translates fully offline. Returns an empty string only when the on-device
+  /// engine for that direction is unavailable or produced no usable output.
   @override
   Future<String> translate(String text, {required String sourceLang, required String targetLang}) async {
     if (!_initialized) {
@@ -159,146 +180,108 @@ class OnnxNmtServiceImpl implements NmtService {
     final clean = text.trim();
     if (clean.isEmpty) return '';
 
-    AppLogger.info('OnnxNmtService', 'Translating [$sourceLang -> $targetLang]: "$clean"');
-
-    final isEnToJa = sourceLang.toLowerCase() == 'en' || targetLang.toLowerCase() == 'ja';
-
-    // 1. Attempt Native ONNX Model Execution
-    if (isEnToJa && _isEnJaNativeActive && _enJaEncoderSession != null && _enJaDecoderSession != null) {
-      try {
-        final result = await _runOnnxTranslation(
-          clean,
-          encoderSession: _enJaEncoderSession!,
-          decoderSession: _enJaDecoderSession!,
-          vocab: _enJaVocab,
-          reverseVocab: _enJaReverseVocab,
-        );
-        if (_isValidTranslation(result)) {
-          AppLogger.info('OnnxNmtService', 'EN->JA ONNX translated: "$clean" -> "$result"');
-          return result;
-        } else {
-          AppLogger.warning('OnnxNmtService', 'EN->JA ONNX translation degraded ("$result"), using fallback.');
-        }
-      } catch (err, st) {
-        AppLogger.error('OnnxNmtService', 'EN->JA ONNX runtime inference exception', err, st);
-      }
-    } else if (!isEnToJa && _isJaEnNativeActive && _jaEnEncoderSession != null && _jaEnDecoderSession != null) {
-      try {
-        final result = await _runOnnxTranslation(
-          clean,
-          encoderSession: _jaEnEncoderSession!,
-          decoderSession: _jaEnDecoderSession!,
-          vocab: _jaEnVocab,
-          reverseVocab: _jaEnReverseVocab,
-        );
-        if (_isValidTranslation(result)) {
-          AppLogger.info('OnnxNmtService', 'JA->EN ONNX translated: "$clean" -> "$result"');
-          return result;
-        } else {
-          AppLogger.warning('OnnxNmtService', 'JA->EN ONNX translation degraded ("$result"), using fallback.');
-        }
-      } catch (err, st) {
-        AppLogger.error('OnnxNmtService', 'JA->EN ONNX runtime inference exception', err, st);
-      }
+    final isEnToJa = sourceLang.toLowerCase().startsWith('en');
+    final engine = isEnToJa ? _enJa : _jaEn;
+    if (engine == null) {
+      AppLogger.warning('OnnxNmtService', 'ONNX engine for ${isEnToJa ? 'EN->JA' : 'JA->EN'} is unavailable.');
+      return '';
     }
 
-    // 2. Fallback Translation for headless test environments or pending model initialization
-    return _fallbackTranslate(clean, sourceLang: sourceLang, targetLang: targetLang);
+    try {
+      final result = _runOnnxTranslation(clean, engine, targetIsJapanese: isEnToJa);
+      if (_isValidTranslation(result)) {
+        AppLogger.info('OnnxNmtService', '${isEnToJa ? 'EN->JA' : 'JA->EN'} on-device: "$clean" -> "$result"');
+        return result;
+      }
+      AppLogger.warning('OnnxNmtService', 'Degenerate ONNX output ("$result").');
+    } catch (err, st) {
+      AppLogger.error('OnnxNmtService', 'ONNX runtime inference exception', err, st);
+    }
+    return '';
   }
 
   bool _isValidTranslation(String result) {
     final trimmed = result.trim();
     if (trimmed.isEmpty) return false;
-    if (trimmed.contains('????') || trimmed.contains('\u2581') || trimmed.contains('▁')) return false;
-
-    // Reject pathological repetitive degeneration (e.g., "spirit spirit spirit")
-    final words = trimmed.toLowerCase().replaceAll(RegExp(r'[^a-z0-9\s]'), '').split(RegExp(r'\s+'));
-    if (words.length >= 3) {
-      int repeatCount = 0;
-      for (int i = 1; i < words.length; i++) {
-        if (words[i].isNotEmpty && words[i] == words[i - 1]) {
-          repeatCount++;
-          if (repeatCount >= 2) return false;
-        } else {
-          repeatCount = 0;
-        }
-      }
-    }
+    if (trimmed.contains('\u2581') || trimmed.contains('<unk>')) return false;
     return true;
   }
 
-  Future<String> _runOnnxTranslation(
-    String text, {
-    required OrtSession encoderSession,
-    required OrtSession decoderSession,
-    required Map<String, int> vocab,
-    required Map<int, String> reverseVocab,
-    int maxNewTokens = 48,
-  }) async {
-    final tokenIds = _tokenize(text, vocab);
-    final seqLen = tokenIds.length;
-    if (seqLen == 0) return '';
+  String _runOnnxTranslation(
+    String text,
+    _DirectionEngine engine, {
+    required bool targetIsJapanese,
+    int maxNewTokens = 64,
+  }) {
+    final vocab = engine.vocab;
+    final eosId = vocab['</s>'] ?? 0;
+    final padId = vocab['<pad>'] ?? 0;
+    final unkId = vocab['<unk>'] ?? 1;
 
-    final attentionMask = List<int>.filled(seqLen, 1);
+    // 1. SentencePiece-tokenize the source text, then map pieces -> vocab ids.
+    final pieces = engine.sourceSpm.encode(text);
+    if (pieces.isEmpty) return '';
+    final tokenIds = <int>[
+      for (final piece in pieces) vocab[piece] ?? unkId,
+      eosId,
+    ];
+    final seqLen = tokenIds.length;
+
     final inputTensor = OrtValueTensor.createTensorWithDataList(tokenIds, [1, seqLen]);
-    final attentionMaskTensor = OrtValueTensor.createTensorWithDataList(attentionMask, [1, seqLen]);
+    final attentionMaskTensor =
+        OrtValueTensor.createTensorWithDataList(List<int>.filled(seqLen, 1), [1, seqLen]);
     final runOptions = OrtRunOptions();
 
     List<OrtValue?>? encoderOutputs;
-    final generatedIds = <int>[];
+    final generated = <int>[];
 
     try {
-      final encoderInputs = {
+      encoderOutputs = engine.encoder.run(runOptions, {
         'input_ids': inputTensor,
         'attention_mask': attentionMaskTensor,
-      };
+      });
+      final hidden = encoderOutputs[0];
+      if (hidden == null) return '';
 
-      encoderOutputs = encoderSession.run(runOptions, encoderInputs);
-      final encoderHiddenStates = encoderOutputs[0];
-      if (encoderHiddenStates == null) return '';
+      // Marian decoders start from the pad token.
+      final decoderInputIds = <int>[padId];
 
-      final padTokenId = vocab['<pad>'] ?? 46275;
-      final eosTokenId = vocab['</s>'] ?? 0;
-      final decoderInputIds = <int>[padTokenId];
-
-      for (int step = 0; step < maxNewTokens; step++) {
-        final decInputTensor = OrtValueTensor.createTensorWithDataList(
+      for (var step = 0; step < maxNewTokens; step++) {
+        final decInput = OrtValueTensor.createTensorWithDataList(
           decoderInputIds,
           [1, decoderInputIds.length],
         );
-
         List<OrtValue?>? decoderOutputs;
         try {
-          final decoderInputs = {
-            'input_ids': decInputTensor,
-            'encoder_hidden_states': encoderHiddenStates,
+          decoderOutputs = engine.decoder.run(runOptions, {
+            'input_ids': decInput,
+            'encoder_hidden_states': hidden,
             'encoder_attention_mask': attentionMaskTensor,
-          };
-
-          decoderOutputs = decoderSession.run(runOptions, decoderInputs);
+          });
           final logitsTensor = decoderOutputs[0];
           if (logitsTensor == null || logitsTensor.value == null) break;
 
           final raw = logitsTensor.value as List<dynamic>;
-          final batchLogits = raw[0] as List<dynamic>;
-          final lastStepLogits = batchLogits.last as List<dynamic>;
+          final batch = raw[0] as List<dynamic>;
+          final last = batch.last as List<dynamic>;
 
-          int bestToken = 0;
-          double bestLogit = double.negativeInfinity;
-          for (int i = 0; i < lastStepLogits.length; i++) {
-            if (i == padTokenId) continue; // Suppress padding token during autoregressive generation
-            final val = (lastStepLogits[i] as num).toDouble();
-            if (val > bestLogit) {
-              bestLogit = val;
+          final banned = _repeatedNgramBans(generated);
+          var bestToken = eosId;
+          var bestLogit = double.negativeInfinity;
+          for (var i = 0; i < last.length; i++) {
+            if (i == padId || i == unkId || banned.contains(i)) continue;
+            final v = (last[i] as num).toDouble();
+            if (v > bestLogit) {
+              bestLogit = v;
               bestToken = i;
             }
           }
 
-          generatedIds.add(bestToken);
-          if (bestToken == eosTokenId) break;
+          if (bestToken == eosId) break;
+          generated.add(bestToken);
           decoderInputIds.add(bestToken);
         } finally {
-          decInputTensor.release();
+          decInput.release();
           if (decoderOutputs != null) {
             for (final out in decoderOutputs) {
               out?.release();
@@ -317,140 +300,53 @@ class OnnxNmtServiceImpl implements NmtService {
       runOptions.release();
     }
 
-    return _detokenize(generatedIds, reverseVocab);
+    return _detokenize(generated, engine.reverseVocab, targetIsJapanese: targetIsJapanese);
   }
 
-  List<int> _tokenize(String text, Map<String, int> vocab) {
-    if (vocab.isEmpty) return [0];
-    final normalized = text
-        .replaceAll('？', '?')
-        .replaceAll('！', '!')
-        .replaceAll('、', ',')
-        .replaceAll('。', '.')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
-    if (normalized.isEmpty) return [vocab['</s>'] ?? 0];
-
-    final tokenIds = <int>[];
-    final unkTokenId = vocab['<unk>'] ?? 1;
-    final eosTokenId = vocab['</s>'] ?? 0;
-    const spPrefix1 = '\u2581';
-    const spPrefix2 = '▁';
-
-    int pos = 0;
-    while (pos < normalized.length) {
-      bool matched = false;
-      final maxLen = min(30, normalized.length - pos);
-      for (int len = maxLen; len >= 1; len--) {
-        final sub = normalized.substring(pos, pos + len);
-        final withSp1 = '$spPrefix1$sub';
-        final withSp2 = '$spPrefix2$sub';
-        final withSpace = ' $sub';
-
-        if (pos == 0 && (vocab.containsKey(withSp1) || vocab.containsKey(withSp2))) {
-          tokenIds.add(vocab[withSp1] ?? vocab[withSp2]!);
-          pos += len;
-          matched = true;
-          break;
-        } else if (pos == 0 && vocab.containsKey(withSpace)) {
-          tokenIds.add(vocab[withSpace]!);
-          pos += len;
-          matched = true;
-          break;
-        } else if (vocab.containsKey(sub)) {
-          tokenIds.add(vocab[sub]!);
-          pos += len;
-          matched = true;
-          break;
-        } else if (vocab.containsKey(withSp1) || vocab.containsKey(withSp2)) {
-          tokenIds.add(vocab[withSp1] ?? vocab[withSp2]!);
-          pos += len;
-          matched = true;
-          break;
-        } else if (vocab.containsKey(withSpace)) {
-          tokenIds.add(vocab[withSpace]!);
-          pos += len;
-          matched = true;
+  /// No-repeat-trigram blocking: returns tokens that would repeat an n-gram.
+  Set<int> _repeatedNgramBans(List<int> generated, {int n = 3}) {
+    if (generated.length < n - 1) return const {};
+    final prefix = generated.sublist(generated.length - (n - 1));
+    final banned = <int>{};
+    for (var i = 0; i + n <= generated.length; i++) {
+      var match = true;
+      for (var k = 0; k < n - 1; k++) {
+        if (generated[i + k] != prefix[k]) {
+          match = false;
           break;
         }
       }
-
-      if (!matched) {
-        tokenIds.add(unkTokenId);
-        pos += 1;
-      }
+      if (match) banned.add(generated[i + n - 1]);
     }
-
-    tokenIds.add(eosTokenId);
-    return tokenIds;
+    return banned;
   }
 
-  String _detokenize(List<int> tokenIds, Map<int, String> reverseVocab) {
+  String _detokenize(List<int> ids, Map<int, String> reverseVocab, {required bool targetIsJapanese}) {
     final buffer = StringBuffer();
-    for (final id in tokenIds) {
-      final tok = reverseVocab[id] ?? '';
-      if (tok == '</s>' || tok == '<pad>') continue;
-      if (tok.startsWith('\u2581') || tok.startsWith('▁') || tok.startsWith(' ')) {
-        if (buffer.isNotEmpty) buffer.write(' ');
-        buffer.write(tok.substring(1));
-      } else {
-        buffer.write(tok);
-      }
+    for (final id in ids) {
+      final tok = reverseVocab[id];
+      if (tok == null || tok == '</s>' || tok == '<pad>' || tok == '<unk>') continue;
+      buffer.write(tok);
     }
-    return buffer.toString().trim();
-  }
-
-  String _fallbackTranslate(String clean, {required String sourceLang, required String targetLang}) {
-    final lower = clean.toLowerCase();
-
-    // Japanese to English fallback mapping
-    if (sourceLang == 'ja' || targetLang == 'en') {
-      if (clean.contains('こんにちは')) {
-        return 'Hello! How are you doing?';
-      } else if (clean.contains('駅') || clean.contains('渋谷')) {
-        return 'The station is straight ahead, then turn right at the corner.';
-      } else if (clean.contains('ありがとう')) {
-        return 'Thank you very much for your assistance!';
-      } else if (clean.contains('ラーメン')) {
-        return 'There is a famous ramen shop just down this street.';
-      } else if (clean.isNotEmpty) {
-        return 'Translated: $clean (English)';
-      }
-      return 'Hello!';
+    var out = buffer.toString().replaceAll(SentencePieceModel.spaceMarker, ' ').trim();
+    if (targetIsJapanese) {
+      // The Japanese target side is space-segmented; remove spaces between CJK characters.
+      const cjk = r'[\u3000-\u9fff\uff00-\uffef]';
+      out = out.replaceAll(RegExp('(?<=$cjk) +(?=$cjk)'), '');
     }
-
-    // English to Japanese fallback mapping
-    if (lower.contains('shibuya')) {
-      return '渋谷駅はどこにありますか？';
-    } else if (lower.contains('station') || lower.contains('train')) {
-      return '最寄りの駅への行き方を教えていただけますか？';
-    } else if (lower.contains('thank')) {
-      return 'ご親切に本当にありがとうございます。';
-    } else if (lower.contains('hello') || lower.contains('hi')) {
-      return 'こんにちは！今日はどのようなご用件でしょうか？';
-    } else if (lower.contains('ramen')) {
-      return 'この近くで一番美味しいラーメン屋はどこですか？';
-    } else if (clean.isNotEmpty) {
-      return '翻訳: $clean (日本語)';
-    }
-    return 'こんにちは！';
+    return out;
   }
 
   @override
   Future<void> dispose() async {
-    try {
-      _enJaEncoderSession?.release();
-      _enJaDecoderSession?.release();
-      _jaEnEncoderSession?.release();
-      _jaEnDecoderSession?.release();
-    } catch (_) {}
-    _enJaEncoderSession = null;
-    _enJaDecoderSession = null;
-    _jaEnEncoderSession = null;
-    _jaEnDecoderSession = null;
-    _isEnJaNativeActive = false;
-    _isJaEnNativeActive = false;
+    _enJa?.release();
+    _jaEn?.release();
+    _enJa = null;
+    _jaEn = null;
     _initialized = false;
     AppLogger.info('OnnxNmtService', 'Disposed OnnxNmtService ONNX sessions');
   }
 }
+
+/// Convenience for platforms where native ONNX Runtime FFI is unavailable (web).
+bool get onnxNmtSupported => !kIsWeb;

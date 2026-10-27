@@ -28,63 +28,63 @@ MODELS = [
     },
     # MarianMT NMT English -> Japanese
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/onnx/encoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/onnx/encoder_model_quantized.onnx",
         "dest": "assets/models/nmt_en_ja/encoder_model_quantized.onnx",
         "desc": "MarianMT EN->JA Quantized Encoder"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/onnx/decoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/onnx/decoder_model_quantized.onnx",
         "dest": "assets/models/nmt_en_ja/decoder_model_quantized.onnx",
         "desc": "MarianMT EN->JA Quantized Decoder"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/source.spm",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/source.spm",
         "dest": "assets/models/nmt_en_ja/source.spm",
         "desc": "MarianMT EN->JA Source SPM"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/target.spm",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/target.spm",
         "dest": "assets/models/nmt_en_ja/target.spm",
         "desc": "MarianMT EN->JA Target SPM"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/vocab.json",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/vocab.json",
         "dest": "assets/models/nmt_en_ja/vocab.json",
         "desc": "MarianMT EN->JA Vocabulary"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-en-jap/resolve/main/tokenizer_config.json",
+        "url": "https://huggingface.co/Kadonox/fugumt-en-ja-onnx/resolve/main/tokenizer_config.json",
         "dest": "assets/models/nmt_en_ja/tokenizer_config.json",
         "desc": "MarianMT EN->JA Tokenizer Config"
     },
     # MarianMT NMT Japanese -> English
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/onnx/encoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/onnx/encoder_model_quantized.onnx",
         "dest": "assets/models/nmt_ja_en/encoder_model_quantized.onnx",
         "desc": "MarianMT JA->EN Quantized Encoder"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/onnx/decoder_model_quantized.onnx",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/onnx/decoder_model_quantized.onnx",
         "dest": "assets/models/nmt_ja_en/decoder_model_quantized.onnx",
         "desc": "MarianMT JA->EN Quantized Decoder"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/source.spm",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/source.spm",
         "dest": "assets/models/nmt_ja_en/source.spm",
         "desc": "MarianMT JA->EN Source SPM"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/target.spm",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/target.spm",
         "dest": "assets/models/nmt_ja_en/target.spm",
         "desc": "MarianMT JA->EN Target SPM"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/vocab.json",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/vocab.json",
         "dest": "assets/models/nmt_ja_en/vocab.json",
         "desc": "MarianMT JA->EN Vocabulary"
     },
     {
-        "url": "https://huggingface.co/Xenova/opus-mt-jap-en/resolve/main/tokenizer_config.json",
+        "url": "https://huggingface.co/Xenova/opus-mt-ja-en/resolve/main/tokenizer_config.json",
         "dest": "assets/models/nmt_ja_en/tokenizer_config.json",
         "desc": "MarianMT JA->EN Tokenizer Config"
     },

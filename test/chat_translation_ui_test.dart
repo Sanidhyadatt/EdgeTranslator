@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_mlkit_translation/google_mlkit_translation.dart';
 
 import 'package:edge_translator/main.dart';
 import 'package:edge_translator/features/translation/domain/models/chat_message.dart';
@@ -9,35 +8,11 @@ import 'package:edge_translator/providers/chat_translation_provider.dart';
 import 'package:edge_translator/providers/service_providers.dart';
 import 'widget_test.dart';
 
-class MockModelManager implements OnDeviceTranslatorModelManager {
-  bool isDownloaded = false;
-  int downloadCalls = 0;
-
-  @override
-  Future<bool> isModelDownloaded(String model) async => isDownloaded;
-
-  @override
-  Future<bool> downloadModel(String model, {bool isWifiRequired = true}) async {
-    downloadCalls++;
-    isDownloaded = true;
-    return true;
-  }
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
-}
-
 class TestTranslationService extends TranslationService {
-  final MockModelManager mockManager;
-
-  TestTranslationService(this.mockManager) : super(modelManager: mockManager);
+  TestTranslationService();
 
   @override
-  Future<bool> initializeModels({bool isWifiRequired = true}) async {
-    await mockManager.downloadModel('en');
-    await mockManager.downloadModel('ja');
-    return true;
-  }
+  Future<bool> initializeModels({bool isWifiRequired = false}) async => true;
 
   @override
   Future<String> translateToJapanese(String text) async {
@@ -53,36 +28,14 @@ class TestTranslationService extends TranslationService {
 
   @override
   Future<bool> areModelsDownloaded() async {
-    return mockManager.isDownloaded;
+    return true;
   }
 }
 
 void main() {
   group('ChatTranslationProvider Unit Tests', () {
-    test('downloadModels triggers model download and updates areModelsDownloaded', () async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
-
-      final container = ProviderContainer(
-        overrides: [
-          translationServiceProvider.overrideWithValue(testService),
-        ],
-      );
-      addTearDown(container.dispose);
-
-      final notifier = container.read(chatTranslationProvider.notifier);
-      expect(container.read(chatTranslationProvider).areModelsDownloaded, false);
-
-      await notifier.downloadModels();
-
-      expect(container.read(chatTranslationProvider).areModelsDownloaded, true);
-      expect(container.read(chatTranslationProvider).isLoading, false);
-      expect(mockManager.downloadCalls, greaterThanOrEqualTo(1));
-    });
-
     test('sendEnglishText creates message with translated Japanese text', () async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
+      final testService = TestTranslationService();
 
       final container = ProviderContainer(
         overrides: [
@@ -105,8 +58,7 @@ void main() {
     });
 
     test('sendJapaneseText creates message with translated English text', () async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
+      final testService = TestTranslationService();
 
       final container = ProviderContainer(
         overrides: [
@@ -144,9 +96,8 @@ void main() {
   });
 
   group('Chat UI Widget Tests', () {
-    testWidgets('renders Download Models button, toggle switch, and dual send buttons', (WidgetTester tester) async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
+    testWidgets('renders offline badge (no download), unified toggle switch, mic, and send button', (WidgetTester tester) async {
+      final testService = TestTranslationService();
 
       await tester.pumpWidget(
         ProviderScope(
@@ -160,24 +111,22 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
-      // Download Models button is present
-      expect(find.text('Download Models'), findsWidgets);
+      // No model download UI: models ship pre-installed\r\n      expect(find.text('Download Models'), findsNothing);\r\n      expect(find.text('100% Offline'), findsOneWidget);
 
       // Input TextField is present
       expect(find.byType(TextField), findsOneWidget);
 
-      // Both "Send EN" and "Send JA" buttons are present
-      expect(find.text('Send EN'), findsOneWidget);
-      expect(find.text('Send JA'), findsOneWidget);
+      // Unified switch pill is present
+      expect(find.text('🇺🇸 English'), findsOneWidget);
+      expect(find.text('🇯🇵 日本語'), findsOneWidget);
 
-      // Toggle options are present
-      expect(find.text('English'), findsOneWidget);
-      expect(find.text('日本語'), findsOneWidget);
+      // Unified Mic and Send buttons are present
+      expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
     });
 
-    testWidgets('typing English and pressing Send EN displays English on top and Japanese below on right side', (WidgetTester tester) async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
+    testWidgets('typing English and pressing Send displays English on top and Japanese below on right side', (WidgetTester tester) async {
+      final testService = TestTranslationService();
 
       await tester.pumpWidget(
         ProviderScope(
@@ -196,14 +145,14 @@ void main() {
       await tester.enterText(textField, 'Where is Shibuya?');
       await tester.pump();
 
-      // Tap "Send EN" button
-      await tester.tap(find.text('Send EN'));
+      // Tap Send button (arrow upward)
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(seconds: 1));
 
       // Verify the user's text and translated result are displayed
-      expect(find.text('Where is Shibuya?'), findsOneWidget);
-      expect(find.text('渋谷駅はどこですか？'), findsOneWidget);
+      expect(find.text('Where is Shibuya?'), findsWidgets);
+      expect(find.text('渋谷駅はどこですか？'), findsWidgets);
 
       // Verify message alignment is to the right
       final alignFinder = find.ancestor(
@@ -215,9 +164,8 @@ void main() {
       expect(alignWidget.alignment, Alignment.centerRight);
     });
 
-    testWidgets('typing Japanese and pressing Send JA displays Japanese on top and English below on left side', (WidgetTester tester) async {
-      final mockManager = MockModelManager();
-      final testService = TestTranslationService(mockManager);
+    testWidgets('switching to Japanese, typing Japanese and pressing Send displays Japanese on top and English below on left side', (WidgetTester tester) async {
+      final testService = TestTranslationService();
 
       await tester.pumpWidget(
         ProviderScope(
@@ -231,19 +179,23 @@ void main() {
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 100));
 
+      // Tap the unified toggle to switch from English to Japanese
+      await tester.tap(find.text('🇺🇸 English'));
+      await tester.pump(const Duration(milliseconds: 300));
+
       // Enter Japanese text into TextField
       final textField = find.byType(TextField);
       await tester.enterText(textField, 'こんにちは');
       await tester.pump();
 
-      // Tap "Send JA" button
-      await tester.tap(find.text('Send JA'));
+      // Tap Send button
+      await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 200));
+      await tester.pump(const Duration(seconds: 1));
 
       // Verify user's Japanese text and translated English result are displayed
-      expect(find.text('こんにちは'), findsOneWidget);
-      expect(find.text('Hello! How are you?'), findsOneWidget);
+      expect(find.text('こんにちは'), findsWidgets);
+      expect(find.text('Hello! How are you?'), findsWidgets);
 
       // Verify message alignment is to the left
       final alignFinder = find.ancestor(
@@ -256,3 +208,4 @@ void main() {
     });
   });
 }
+

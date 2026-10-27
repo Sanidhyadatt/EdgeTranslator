@@ -26,14 +26,14 @@ class StatusBanner extends StatelessWidget {
         badgeColor = AppTheme.successEmerald;
         badgeIcon = Icons.check_circle_outline_rounded;
         statusTitle = 'System Ready';
-        statusDetail = 'Hold a button below to begin voice translation';
+        statusDetail = 'Tap microphone or type text to translate';
         break;
       case PipelineStatus.recording:
         badgeColor = AppTheme.errorRose;
         badgeIcon = Icons.mic_rounded;
         final lang = activeLanguage?.name ?? 'Speech';
         statusTitle = 'Listening ($lang)';
-        statusDetail = 'Release the button when you finish speaking';
+        statusDetail = 'Tap microphone to finish speaking';
         break;
       case PipelineStatus.transcribing:
         badgeColor = AppTheme.primaryNeon;

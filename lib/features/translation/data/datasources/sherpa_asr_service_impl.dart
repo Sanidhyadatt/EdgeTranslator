@@ -1,7 +1,7 @@
 // ignore_for_file: avoid_print
 import 'dart:collection';
 import 'dart:io';
-import 'dart:typed_data';
+import 'package:flutter/foundation.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import '../../../../core/constants/app_constants.dart';
@@ -49,6 +49,10 @@ class SherpaAsrServiceImpl implements AsrService {
   @override
   Future<void> initialize() async {
     if (_isInitialized) return;
+    if (kIsWeb) {
+      _isInitialized = true;
+      return;
+    }
 
     AppLogger.info('ASRService', 'Initializing multilingual Whisper ASR and Silero VAD engine...');
 

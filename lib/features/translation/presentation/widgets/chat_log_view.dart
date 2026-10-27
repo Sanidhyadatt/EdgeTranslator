@@ -93,7 +93,7 @@ class _ChatLogViewState extends State<ChatLogView> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Press and hold either button at the bottom to speak.\nTranslations will appear here with instant speech playback.',
+                'Tap the microphone or type below to translate.\nTranslations will appear here with instant speech playback.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 13,
