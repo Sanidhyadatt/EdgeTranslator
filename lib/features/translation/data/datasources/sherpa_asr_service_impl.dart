@@ -1,6 +1,7 @@
 // ignore_for_file: avoid_print
 import 'dart:collection';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
@@ -291,32 +292,131 @@ class SherpaAsrServiceImpl implements AsrService {
     }
 
     if (_isNativeModelActive && _recognizer != null) {
-      final stream = _recognizer!.createStream();
-      try {
-        stream.acceptWaveform(
-          samples: samples,
-          sampleRate: AppConstants.audioSampleRate,
-        );
-        _recognizer!.decode(stream);
-        final result = _recognizer!.getResult(stream);
-        final text = result.text.trim();
-
-        // Retrieve Whisper detected language code (e.g. 'en', 'ja')
-        String detectedLang = result.lang.trim().toLowerCase();
-        if (detectedLang.isEmpty && text.isNotEmpty) {
-          detectedLang = detectLanguage(text).code.toLowerCase();
-        }
-
-        AppLogger.info('ASRService', 'Whisper decoded: "$text" [Language: $detectedLang]');
-        return AsrResult(text: text, language: detectedLang.isEmpty ? 'en' : detectedLang);
-      } catch (err, st) {
-        AppLogger.error('ASRService', 'Native Whisper decoding error', err, st);
-      } finally {
-        stream.free();
+      final trimmed = _trimSilence(samples);
+      if (trimmed == null || trimmed.isEmpty) {
+        AppLogger.info('ASRService', 'Audio below speech energy floor; skipping Whisper decode.');
+        return const AsrResult(text: '', language: 'en');
       }
+
+      const maxChunkSamples = 28 * AppConstants.audioSampleRate;
+      final chunks = _splitLongAudio(trimmed, maxChunkSamples);
+      final transcripts = <String>[];
+      var detectedJa = false;
+      var lastLang = '';
+
+      for (final chunk in chunks) {
+        final stream = _recognizer!.createStream();
+        try {
+          stream.acceptWaveform(
+            samples: chunk,
+            sampleRate: AppConstants.audioSampleRate,
+          );
+          _recognizer!.decode(stream);
+          final result = _recognizer!.getResult(stream);
+          final cleaned = _cleanWhisperText(result.text);
+          if (cleaned.isNotEmpty) {
+            transcripts.add(cleaned);
+            final lang = result.lang.trim().toLowerCase();
+            if (lang.isNotEmpty) lastLang = lang;
+            if (lang == 'ja' || isJapaneseText(cleaned)) {
+              detectedJa = true;
+            }
+          }
+        } catch (err, st) {
+          AppLogger.error('ASRService', 'Native Whisper decoding error', err, st);
+        } finally {
+          stream.free();
+        }
+      }
+
+      final fullText = transcripts.join(detectedJa ? '' : ' ').trim();
+      if (fullText.isEmpty) {
+        return const AsrResult(text: '', language: 'en');
+      }
+
+      final finalLang = (detectedJa || isJapaneseText(fullText) || lastLang == 'ja') ? 'ja' : 'en';
+      AppLogger.info('ASRService', 'Whisper decoded: "$fullText" [Language: $finalLang]');
+      return AsrResult(text: fullText, language: finalLang);
     }
 
     return const AsrResult(text: '', language: 'en');
+  }
+
+  /// Trims leading and trailing near-silence while keeping 0.3s padding,
+  /// returning null if the entire buffer is silent.
+  Float32List? _trimSilence(Float32List samples) {
+    double peak = 0.0;
+    double sumSq = 0.0;
+    for (var i = 0; i < samples.length; i++) {
+      final v = samples[i].abs();
+      if (v > peak) peak = v;
+      sumSq += v * v;
+    }
+    final rms = math.sqrt(sumSq / samples.length);
+    if (peak < 0.004 && rms < 0.001) {
+      return null;
+    }
+
+    const activeThreshold = 0.006;
+    var firstActive = -1;
+    var lastActive = -1;
+    for (var i = 0; i < samples.length; i++) {
+      if (samples[i].abs() >= activeThreshold) {
+        if (firstActive == -1) firstActive = i;
+        lastActive = i;
+      }
+    }
+    if (firstActive == -1) return samples;
+
+    const padSamples = (0.3 * AppConstants.audioSampleRate) ~/ 1;
+    final start = math.max(0, firstActive - padSamples);
+    final end = math.min(samples.length, lastActive + padSamples);
+    if (start == 0 && end == samples.length) return samples;
+    return Float32List.sublistView(samples, start, end);
+  }
+
+  /// Splits recordings exceeding 28s at low-energy boundaries so Whisper's 30s
+  /// context window never truncates long speech.
+  List<Float32List> _splitLongAudio(Float32List samples, int maxSamples) {
+    if (samples.length <= maxSamples) return [samples];
+    final chunks = <Float32List>[];
+    var start = 0;
+    const searchBack = 3 * AppConstants.audioSampleRate;
+    const winSize = 1600; // 100ms
+
+    while (start < samples.length) {
+      if (samples.length - start <= maxSamples) {
+        chunks.add(Float32List.sublistView(samples, start));
+        break;
+      }
+      final hardEnd = start + maxSamples;
+      final searchStart = math.max(start + AppConstants.audioSampleRate, hardEnd - searchBack);
+      var bestSplit = hardEnd;
+      var bestEnergy = double.infinity;
+      for (var pos = searchStart; pos + winSize <= hardEnd; pos += winSize) {
+        var energy = 0.0;
+        for (var k = 0; k < winSize; k++) {
+          final v = samples[pos + k];
+          energy += v * v;
+        }
+        if (energy < bestEnergy) {
+          bestEnergy = energy;
+          bestSplit = pos + winSize ~/ 2;
+        }
+      }
+      chunks.add(Float32List.sublistView(samples, start, bestSplit));
+      start = bestSplit;
+    }
+    return chunks;
+  }
+
+  String _cleanWhisperText(String raw) {
+    var cleaned = raw
+        .replaceAll(RegExp(r'\[(?:BLANK_AUDIO|SILENCE|MUSIC|APPLAUSE|INAUDIBLE|NOISE)\]', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\((?:silence|music|applause|inaudible|noise|blank audio)\)', caseSensitive: false), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim();
+    return cleaned;
   }
 
   @override

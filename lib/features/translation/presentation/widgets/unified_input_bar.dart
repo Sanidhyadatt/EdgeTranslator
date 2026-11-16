@@ -12,8 +12,10 @@ class UnifiedInputBar extends StatefulWidget {
   final ValueChanged<TranslationLanguage> onLanguageChanged;
   final ValueChanged<String> onSend;
   final VoidCallback onMicTap;
+  final VoidCallback? onCancelRecording;
   final bool isRecording;
   final bool isBusy;
+  final int recordingSeconds;
   final String? interimText;
 
   const UnifiedInputBar({
@@ -22,8 +24,10 @@ class UnifiedInputBar extends StatefulWidget {
     required this.onLanguageChanged,
     required this.onSend,
     required this.onMicTap,
+    this.onCancelRecording,
     this.isRecording = false,
     this.isBusy = false,
+    this.recordingSeconds = 0,
     this.interimText,
   });
 
@@ -35,6 +39,7 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
   final TextEditingController _textController = TextEditingController();
   final FocusNode _focusNode = FocusNode();
   bool _hasText = false;
+  bool _hasFocus = false;
   late AnimationController _pulseController;
   late Animation<double> _pulseAnimation;
 
@@ -42,13 +47,22 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
   void initState() {
     super.initState();
     _textController.addListener(_onTextChanged);
+    _focusNode.addListener(_onFocusChanged);
     _pulseController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 800),
     )..repeat(reverse: true);
-    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.15).animate(
+    _pulseAnimation = Tween<double>(begin: 1.0, end: 1.12).animate(
       CurvedAnimation(parent: _pulseController, curve: Curves.easeInOut),
     );
+  }
+
+  void _onFocusChanged() {
+    if (_focusNode.hasFocus != _hasFocus) {
+      setState(() {
+        _hasFocus = _focusNode.hasFocus;
+      });
+    }
   }
 
   void _onTextChanged() {
@@ -76,9 +90,16 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
     widget.onLanguageChanged(next);
   }
 
+  String _formatDuration(int totalSeconds) {
+    final mins = totalSeconds ~/ 60;
+    final secs = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$mins:$secs';
+  }
+
   @override
   void dispose() {
     _pulseController.dispose();
+    _focusNode.removeListener(_onFocusChanged);
     _textController.removeListener(_onTextChanged);
     _textController.dispose();
     _focusNode.dispose();
@@ -89,12 +110,7 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
   Widget build(BuildContext context) {
     final isEn = widget.activeLanguage == TranslationLanguage.english;
     final canSend = _hasText && !widget.isBusy && !widget.isRecording;
-
-    final inputHint = widget.isRecording
-        ? (widget.interimText?.isNotEmpty == true
-            ? widget.interimText!
-            : (isEn ? 'Listening to English...' : '日本語を聞き取り中...'))
-        : (isEn ? 'Type English to translate...' : '日本語を入力してください...');
+    final inputHint = isEn ? 'Type English or Japanese to translate...' : '日本語・英語を入力してください...';
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -106,55 +122,61 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               // Unified Switch Pill
-              GestureDetector(
-                onTap: widget.isBusy ? null : _toggleLanguage,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  decoration: BoxDecoration(
-                    color: AppTheme.surfaceElevated,
-                    borderRadius: BorderRadius.circular(22),
-                    border: Border.all(
-                      color: isEn ? AppTheme.primaryNeon.withValues(alpha: 0.5) : const Color(0xFFFF5277).withValues(alpha: 0.5),
-                      width: 1.2,
+              Tooltip(
+                message: 'Switch input language direction',
+                child: MouseRegion(
+                  cursor: widget.isBusy ? SystemMouseCursors.basic : SystemMouseCursors.click,
+                  child: GestureDetector(
+                    onTap: widget.isBusy ? null : _toggleLanguage,
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AppTheme.surfaceElevated,
+                        borderRadius: BorderRadius.circular(22),
+                        border: Border.all(
+                          color: isEn
+                              ? AppTheme.primaryNeon.withValues(alpha: 0.5)
+                              : const Color(0xFFFF5277).withValues(alpha: 0.5),
+                          width: 1.2,
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.25),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '🇺🇸 English',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: isEn ? FontWeight.bold : FontWeight.w500,
+                              color: isEn ? AppTheme.primaryNeon : AppTheme.textMuted,
+                            ),
+                          ),
+                          const Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 8),
+                            child: Icon(
+                              Icons.swap_horiz_rounded,
+                              size: 18,
+                              color: AppTheme.textMuted,
+                            ),
+                          ),
+                          Text(
+                            '🇯🇵 日本語',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: !isEn ? FontWeight.bold : FontWeight.w500,
+                              color: !isEn ? const Color(0xFFFF5277) : AppTheme.textMuted,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                    boxShadow: [
-                      BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.25),
-                        blurRadius: 8,
-                        offset: const Offset(0, 2),
-                      ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      // English Side
-                      Text(
-                        '🇺🇸 English',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: isEn ? FontWeight.bold : FontWeight.w500,
-                          color: isEn ? AppTheme.primaryNeon : AppTheme.textMuted,
-                        ),
-                      ),
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 8),
-                        child: Icon(
-                          Icons.swap_horiz_rounded,
-                          size: 18,
-                          color: AppTheme.textMuted,
-                        ),
-                      ),
-                      // Japanese Side
-                      Text(
-                        '🇯🇵 日本語',
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: !isEn ? FontWeight.bold : FontWeight.w500,
-                          color: !isEn ? const Color(0xFFFF5277) : AppTheme.textMuted,
-                        ),
-                      ),
-                    ],
                   ),
                 ),
               ),
@@ -172,108 +194,237 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
           ),
         ),
 
-        // 2. Unified Input & Action Row
-        Row(
-          children: [
-            // Mic / Speak Button (Tapping starts recording; tapping while recording STOPS it)
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: (widget.isBusy && !widget.isRecording) ? null : widget.onMicTap,
-              child: AnimatedBuilder(
-                animation: _pulseAnimation,
-                builder: (context, child) {
-                  return Transform.scale(
-                    scale: widget.isRecording ? _pulseAnimation.value : 1.0,
-                    child: child,
-                  );
-                },
-                child: Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: widget.isRecording
-                        ? AppTheme.errorRose
-                        : (isEn ? AppTheme.primaryNeon.withValues(alpha: 0.15) : const Color(0xFFFF5277).withValues(alpha: 0.15)),
-                    border: Border.all(
-                      color: widget.isRecording
-                          ? Colors.white
-                          : (isEn ? AppTheme.primaryNeon : const Color(0xFFFF5277)),
-                      width: widget.isRecording ? 2.0 : 1.2,
+        // 2. Active Listening Bar OR Standard Input Row
+        if (widget.isRecording)
+          _buildListeningBar()
+        else
+          _buildStandardInputRow(isEn, canSend, inputHint),
+      ],
+    );
+  }
+
+  Widget _buildListeningBar() {
+    final timerLabel = _formatDuration(widget.recordingSeconds);
+    final interim = widget.interimText?.trim();
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppTheme.surfaceElevated,
+        borderRadius: BorderRadius.circular(28),
+        border: Border.all(color: AppTheme.errorRose.withValues(alpha: 0.7), width: 1.5),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.errorRose.withValues(alpha: 0.2),
+            blurRadius: 16,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          if (widget.onCancelRecording != null) ...[
+            Tooltip(
+              message: 'Cancel recording',
+              child: MouseRegion(
+                cursor: SystemMouseCursors.click,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(22),
+                  onTap: widget.onCancelRecording,
+                  child: Container(
+                    width: 40,
+                    height: 40,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppTheme.surface,
+                      border: Border.all(color: AppTheme.cardBorder),
                     ),
+                    child: const Icon(
+                      Icons.close_rounded,
+                      color: AppTheme.textSecondary,
+                      size: 20,
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(width: 10),
+          ],
+
+          AnimatedBuilder(
+            animation: _pulseAnimation,
+            builder: (context, child) => Transform.scale(
+              scale: _pulseAnimation.value,
+              child: child,
+            ),
+            child: Container(
+              width: 12,
+              height: 12,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppTheme.errorRose,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Listening... $timerLabel',
+                  style: const TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.textPrimary,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  (interim != null && interim.isNotEmpty)
+                      ? interim
+                      : 'Speak freely — press Stop to translate',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontSize: 11,
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 10),
+
+          Tooltip(
+            message: 'Stop listening & translate',
+            child: MouseRegion(
+              cursor: SystemMouseCursors.click,
+              child: GestureDetector(
+                onTap: widget.onMicTap,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.errorRose,
+                    borderRadius: BorderRadius.circular(22),
                     boxShadow: [
-                      if (widget.isRecording)
-                        BoxShadow(
-                          color: AppTheme.errorRose.withValues(alpha: 0.7),
-                          blurRadius: 14,
-                          spreadRadius: 2,
-                        ),
+                      BoxShadow(
+                        color: AppTheme.errorRose.withValues(alpha: 0.45),
+                        blurRadius: 10,
+                      ),
                     ],
                   ),
-                  child: Icon(
-                    widget.isRecording ? Icons.stop_rounded : Icons.mic_rounded,
-                    color: widget.isRecording
-                        ? Colors.white
-                        : (isEn ? AppTheme.primaryNeon : const Color(0xFFFF5277)),
-                    size: 22,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(width: 8),
-
-            // Text Input Box
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14),
-                decoration: BoxDecoration(
-                  color: AppTheme.surfaceElevated,
-                  borderRadius: BorderRadius.circular(24),
-                  border: Border.all(
-                    color: _focusNode.hasFocus
-                        ? (isEn ? AppTheme.primaryNeon : const Color(0xFFFF5277))
-                        : AppTheme.cardBorder,
-                    width: 1.2,
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: TextField(
-                        controller: _textController,
-                        focusNode: _focusNode,
-                        enabled: !widget.isBusy && !widget.isRecording,
-                        textInputAction: TextInputAction.send,
-                        style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
-                        decoration: InputDecoration(
-                          hintText: inputHint,
-                          hintStyle: TextStyle(
-                            color: widget.isRecording
-                                ? (isEn ? AppTheme.primaryNeon : const Color(0xFFFF5277))
-                                : AppTheme.textMuted,
-                            fontSize: 13,
-                          ),
-                          border: InputBorder.none,
-                          isDense: true,
-                          contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                  child: const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.stop_rounded, color: Colors.white, size: 18),
+                      SizedBox(width: 6),
+                      Text(
+                        'Stop',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 13,
                         ),
-                        onSubmitted: (_) => _handleSend(),
                       ),
-                    ),
-                    if (_hasText && !widget.isBusy && !widget.isRecording)
-                      IconButton(
-                        icon: const Icon(Icons.clear_rounded, size: 16),
-                        color: AppTheme.textMuted,
-                        onPressed: () => _textController.clear(),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
-            const SizedBox(width: 8),
+          ),
+        ],
+      ),
+    );
+  }
 
-            // Just a single Send Button
-            GestureDetector(
+  Widget _buildStandardInputRow(bool isEn, bool canSend, String inputHint) {
+    final accentColor = isEn ? AppTheme.primaryNeon : const Color(0xFFFF5277);
+
+    return Row(
+      children: [
+        // Mic / Speak Button
+        Tooltip(
+          message: 'Tap to start speaking (listens until Stop)',
+          child: MouseRegion(
+            cursor: widget.isBusy ? SystemMouseCursors.basic : SystemMouseCursors.click,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: widget.isBusy ? null : widget.onMicTap,
+              child: Container(
+                width: 48,
+                height: 48,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: accentColor.withValues(alpha: 0.15),
+                  border: Border.all(color: accentColor, width: 1.2),
+                ),
+                child: Icon(
+                  Icons.mic_rounded,
+                  color: accentColor,
+                  size: 22,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+
+        // Text Input Box
+        Expanded(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            decoration: BoxDecoration(
+              color: AppTheme.surfaceElevated,
+              borderRadius: BorderRadius.circular(24),
+              border: Border.all(
+                color: _hasFocus ? accentColor : AppTheme.cardBorder,
+                width: 1.2,
+              ),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _textController,
+                    focusNode: _focusNode,
+                    enabled: !widget.isBusy,
+                    textInputAction: TextInputAction.send,
+                    style: const TextStyle(color: AppTheme.textPrimary, fontSize: 14),
+                    decoration: InputDecoration(
+                      hintText: inputHint,
+                      hintStyle: const TextStyle(
+                        color: AppTheme.textMuted,
+                        fontSize: 13,
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    onSubmitted: (_) => _handleSend(),
+                  ),
+                ),
+                if (_hasText && !widget.isBusy)
+                  IconButton(
+                    icon: const Icon(Icons.clear_rounded, size: 16),
+                    color: AppTheme.textMuted,
+                    visualDensity: VisualDensity.compact,
+                    onPressed: () => _textController.clear(),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(width: 8),
+
+        // Send Button
+        Tooltip(
+          message: 'Translate text',
+          child: MouseRegion(
+            cursor: canSend ? SystemMouseCursors.click : SystemMouseCursors.basic,
+            child: GestureDetector(
               onTap: canSend ? _handleSend : null,
               child: Container(
                 width: 48,
@@ -299,7 +450,7 @@ class _UnifiedInputBarState extends State<UnifiedInputBar> with SingleTickerProv
                 ),
               ),
             ),
-          ],
+          ),
         ),
       ],
     );

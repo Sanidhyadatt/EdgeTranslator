@@ -53,6 +53,11 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 add_subdirectory("runner")
 
 
+# Provide local standalone nuget.exe for plugins (e.g. flutter_tts) if available.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../tool/nuget.exe")
+  set(NUGET_EXE "${CMAKE_CURRENT_SOURCE_DIR}/../tool/nuget.exe" CACHE FILEPATH "Path to nuget.exe" FORCE)
+endif()
+
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
 include(flutter/generated_plugins.cmake)
@@ -82,6 +87,9 @@ install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
 if(PLUGIN_BUNDLED_LIBRARIES)
+  # Filter out the older ORT 1.15.1 onnxruntime.dll bundled by the `onnxruntime` plugin
+  # so `sherpa_onnx_windows`'s newer backward-compatible onnxruntime.dll (API v1..28) is installed.
+  list(FILTER PLUGIN_BUNDLED_LIBRARIES EXCLUDE REGEX ".*onnxruntime/windows/onnxruntime\\.dll$")
   install(FILES "${PLUGIN_BUNDLED_LIBRARIES}"
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)

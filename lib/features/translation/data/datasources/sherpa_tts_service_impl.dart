@@ -3,14 +3,17 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart';
+import 'package:onnxruntime/onnxruntime.dart';
 import 'package:path/path.dart' as p;
 import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 import '../../../../core/utils/app_logger.dart';
 import '../../domain/services/tts_service.dart';
+import 'japanese_melo_g2p.dart';
 import 'model_loader.dart';
 
-/// Sherpa-ONNX Text-to-Speech (TTS) engine foundation supporting Japanese and English synthesis.
+/// Offline Text-to-Speech (TTS) engine supporting Japanese (Melo-VITS via ONNX Runtime)
+/// and English (Piper VITS via Sherpa-ONNX when lexicon/espeak-ng-data is present).
 class SherpaTtsServiceImpl implements TtsService {
   final String? modelPath;
   final String? lexiconPath;
@@ -19,11 +22,17 @@ class SherpaTtsServiceImpl implements TtsService {
   final ModelLoader _modelLoader;
 
   sherpa.OfflineTts? _enTts;
-  sherpa.OfflineTts? _jaTts;
+  OrtSession? _jaSession;
+  JapaneseMeloG2p? _jaG2p;
 
   bool _isEnNativeActive = false;
   bool _isJaNativeActive = false;
   bool _initialized = false;
+
+  bool isAvailableFor(String language) {
+    final isJa = language.toLowerCase().startsWith('ja');
+    return isJa ? _isJaNativeActive : _isEnNativeActive;
+  }
 
   SherpaTtsServiceImpl({
     this.modelPath,
@@ -121,38 +130,45 @@ class SherpaTtsServiceImpl implements TtsService {
         AppLogger.warning('SherpaTtsService', 'English TTS weights missing: ${enModelFile.path}');
       }
 
-      // 2. Initialize Japanese TTS (Melo-VITS: model (1).onnx + tokens (2).txt + lexicon.txt)
+      // 2. Initialize Japanese TTS (Melo-VITS via ONNX Runtime + JapaneseMeloG2p)
+      // Using OrtSession directly avoids a sherpa-onnx C++ frontend bug where
+      // language=Japanese with jieba=0 skips MeloTtsLexicon and crashes on tone IDs.
       if (jaModelFile.existsSync() && jaTokensFile.existsSync()) {
         try {
-          print('[FFI DEBUG][TTS] Instantiating native Japanese OfflineTts:');
-          print('  Model:   ${jaModelFile.path}');
-          print('  Tokens:  ${jaTokensFile.path}');
-          print('  Lexicon: $jaLexiconPath');
+          try {
+            OrtEnv.instance.init();
+          } catch (_) {}
 
-          final jaConfig = sherpa.OfflineTtsConfig(
-            model: sherpa.OfflineTtsModelConfig(
-              vits: sherpa.OfflineTtsVitsModelConfig(
-                model: jaModelFile.path,
-                tokens: jaTokensFile.path,
-                lexicon: jaLexiconPath,
-                dataDir: dataDir ?? ttsPaths.ja.dataDir ?? '',
-              ),
-              numThreads: 2,
-              debug: false,
-              provider: 'cpu',
-            ),
+          final tokenLines = await jaTokensFile.readAsLines();
+          final jaLexFile = File(jaLexiconPath);
+          final lexiconLines = jaLexFile.existsSync() ? await jaLexFile.readAsLines() : <String>[];
+          _jaG2p = JapaneseMeloG2p.fromFiles(
+            tokenLines: tokenLines,
+            lexiconLines: lexiconLines,
           );
-          _jaTts = sherpa.OfflineTts(jaConfig);
+
+          final opts = OrtSessionOptions();
+          if (Platform.isWindows) {
+            _jaSession = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
+          } else {
+            try {
+              _jaSession = OrtSession.fromFile(jaModelFile, opts);
+            } catch (_) {
+              _jaSession = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
+            }
+          }
           _isJaNativeActive = true;
-          print('[FFI DEBUG][TTS] Successfully initialized native Japanese OfflineTts.');
-          AppLogger.info('SherpaTtsService', 'Initialized Japanese (Melo-VITS) TTS from: ${jaModelFile.path}');
+          AppLogger.info(
+            'SherpaTtsService',
+            'Initialized Japanese (Melo-VITS ORT) TTS from: ${jaModelFile.path} (${_jaG2p!.lexicon.length} lexicon words)',
+          );
         } catch (e, st) {
           _isJaNativeActive = false;
-          print('[FFI DEBUG][TTS] Failed initializing native Japanese OfflineTts: $e');
+          _jaSession = null;
+          _jaG2p = null;
           AppLogger.error('SherpaTtsService', 'Failed initializing Japanese TTS engine', e, st);
         }
       } else {
-        print('[FFI DEBUG][TTS] Japanese TTS weights missing on disk: ${jaModelFile.path}');
         AppLogger.warning('SherpaTtsService', 'Japanese TTS weights missing: ${jaModelFile.path}');
       }
     } catch (e, st) {
@@ -184,13 +200,13 @@ class SherpaTtsServiceImpl implements TtsService {
       'Synthesizing $targetLangLabel speech: "$cleanText" (speed: $speed)',
     );
 
-    // 1. Attempt Japanese Native Synthesis
-    if (isJapanese && _isJaNativeActive && _jaTts != null) {
+    // 1. Attempt Japanese Native Synthesis (Melo-VITS ONNX Runtime)
+    if (isJapanese && _isJaNativeActive && _jaSession != null && _jaG2p != null) {
       try {
-        final audio = _jaTts!.generate(text: cleanText, speed: speed);
-        if (audio.samples.isNotEmpty) {
-          final wavPath = await _saveToWavFile(audio.samples, audio.sampleRate, 'tts_ja');
-          AppLogger.info('SherpaTtsService', 'Synthesized ${audio.samples.length} Japanese audio samples to: $wavPath');
+        final samples = _synthesizeJapaneseMelo(cleanText, speed: speed);
+        if (samples.isNotEmpty) {
+          final wavPath = await _saveToWavFile(samples, 44100, 'tts_ja');
+          AppLogger.info('SherpaTtsService', 'Synthesized ${samples.length} Japanese audio samples to: $wavPath');
           return wavPath;
         }
       } catch (err, st) {
@@ -214,6 +230,92 @@ class SherpaTtsServiceImpl implements TtsService {
 
     // 3. Fallback: generate a dummy silent WAV file for UI testing and headless environments
     return await _generateFallbackWav(cleanText, language: language);
+  }
+
+  Float32List _synthesizeJapaneseMelo(String text, {double speed = 1.0}) {
+    final g2p = _jaG2p!;
+    final session = _jaSession!;
+    final sentences = g2p.encodeSentences(text);
+    if (sentences.isEmpty) return Float32List(0);
+
+    const sampleRate = 44100;
+    const padSamples = (sampleRate * 0.08) ~/ 1;
+    const pauseSamples = (sampleRate * 0.18) ~/ 1;
+    final lengthScale = speed > 0 ? 1.0 / speed : 1.0;
+
+    final allChunks = <Float32List>[
+      Float32List(padSamples),
+    ];
+    final runOptions = OrtRunOptions();
+
+    try {
+      for (var sIdx = 0; sIdx < sentences.length; sIdx++) {
+        final x = sentences[sIdx];
+        final tones = List<int>.filled(x.length, 0);
+        final xT = OrtValueTensor.createTensorWithDataList(x, [1, x.length]);
+        final lenT = OrtValueTensor.createTensorWithDataList(Int64List.fromList([x.length]), [1]);
+        final tonesT = OrtValueTensor.createTensorWithDataList(tones, [1, x.length]);
+        final sidT = OrtValueTensor.createTensorWithDataList(Int64List.fromList([0]), [1]);
+        final nsT = OrtValueTensor.createTensorWithDataList(Float32List.fromList([0.667]), [1]);
+        final lsT = OrtValueTensor.createTensorWithDataList(Float32List.fromList([lengthScale]), [1]);
+        final nswT = OrtValueTensor.createTensorWithDataList(Float32List.fromList([0.8]), [1]);
+
+        List<OrtValue?>? outs;
+        try {
+          outs = session.run(runOptions, {
+            'x': xT,
+            'x_lengths': lenT,
+            'tones': tonesT,
+            'sid': sidT,
+            'noise_scale': nsT,
+            'length_scale': lsT,
+            'noise_scale_w': nswT,
+          });
+          if (outs.isNotEmpty && outs[0]?.value != null) {
+            dynamic val = outs[0]!.value;
+            while (val is List && val.isNotEmpty && val.first is List) {
+              val = val.first;
+            }
+            if (val is List && val.isNotEmpty) {
+              final chunk = Float32List(val.length);
+              for (var i = 0; i < val.length; i++) {
+                chunk[i] = (val[i] as num).toDouble();
+              }
+              allChunks.add(chunk);
+              if (sIdx + 1 < sentences.length) {
+                allChunks.add(Float32List(pauseSamples));
+              }
+            }
+          }
+        } finally {
+          for (final t in [xT, lenT, tonesT, sidT, nsT, lsT, nswT]) {
+            t.release();
+          }
+          if (outs != null) {
+            for (final o in outs) {
+              o?.release();
+            }
+          }
+        }
+      }
+    } finally {
+      runOptions.release();
+    }
+
+    if (allChunks.length <= 1) return Float32List(0);
+    allChunks.add(Float32List(padSamples));
+
+    var totalLen = 0;
+    for (final c in allChunks) {
+      totalLen += c.length;
+    }
+    final result = Float32List(totalLen);
+    var offset = 0;
+    for (final c in allChunks) {
+      result.setRange(offset, offset + c.length, c);
+      offset += c.length;
+    }
+    return result;
   }
 
   /// Writes Float32 PCM audio samples to a standard 16-bit PCM .wav file.
@@ -284,10 +386,11 @@ class SherpaTtsServiceImpl implements TtsService {
   Future<void> dispose() async {
     try {
       _enTts?.free();
-      _jaTts?.free();
+      _jaSession?.release();
     } catch (_) {}
     _enTts = null;
-    _jaTts = null;
+    _jaSession = null;
+    _jaG2p = null;
     _isEnNativeActive = false;
     _isJaNativeActive = false;
     _initialized = false;

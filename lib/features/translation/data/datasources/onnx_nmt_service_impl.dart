@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'package:flutter/foundation.dart';
 import 'package:onnxruntime/onnxruntime.dart';
 
@@ -13,6 +14,7 @@ class _DirectionEngine {
   final OrtSession encoder;
   final OrtSession decoder;
   final Map<String, int> vocab;
+  final Set<String> vocabSet;
   final Map<int, String> reverseVocab;
   final SentencePieceModel sourceSpm;
 
@@ -22,7 +24,7 @@ class _DirectionEngine {
     required this.vocab,
     required this.reverseVocab,
     required this.sourceSpm,
-  });
+  }) : vocabSet = vocab.keys.toSet();
 
   void release() {
     try {
@@ -188,7 +190,19 @@ class OnnxNmtServiceImpl implements NmtService {
     }
 
     try {
-      final result = _runOnnxTranslation(clean, engine, targetIsJapanese: isEnToJa);
+      final sentences = _splitSentences(clean);
+      final translatedParts = <String>[];
+      for (final sentence in sentences) {
+        final translated = _runOnnxTranslation(
+          sentence,
+          engine,
+          targetIsJapanese: isEnToJa,
+        );
+        if (_isValidTranslation(translated)) {
+          translatedParts.add(translated);
+        }
+      }
+      final result = isEnToJa ? translatedParts.join('') : translatedParts.join(' ');
       if (_isValidTranslation(result)) {
         AppLogger.info('OnnxNmtService', '${isEnToJa ? 'EN->JA' : 'JA->EN'} on-device: "$clean" -> "$result"');
         return result;
@@ -198,6 +212,20 @@ class OnnxNmtServiceImpl implements NmtService {
       AppLogger.error('OnnxNmtService', 'ONNX runtime inference exception', err, st);
     }
     return '';
+  }
+
+  /// Splits multi-sentence text on sentence-ending punctuation while keeping the
+  /// punctuation attached to each sentence so NMT models stay in their optimal
+  /// single-sentence training distribution.
+  List<String> _splitSentences(String text) {
+    final normalized = text.trim();
+    if (normalized.isEmpty) return const [];
+    final parts = normalized
+        .split(RegExp(r'(?<=[。！？!?])\s*|(?<=\.)\s+(?=[A-Za-z0-9\u3040-\u9FFF])'))
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .toList();
+    return parts.isEmpty ? [normalized] : parts;
   }
 
   bool _isValidTranslation(String result) {
@@ -211,21 +239,21 @@ class OnnxNmtServiceImpl implements NmtService {
     String text,
     _DirectionEngine engine, {
     required bool targetIsJapanese,
-    int maxNewTokens = 64,
   }) {
     final vocab = engine.vocab;
     final eosId = vocab['</s>'] ?? 0;
     final padId = vocab['<pad>'] ?? 0;
     final unkId = vocab['<unk>'] ?? 1;
 
-    // 1. SentencePiece-tokenize the source text, then map pieces -> vocab ids.
-    final pieces = engine.sourceSpm.encode(text);
+    // 1. SentencePiece-tokenize the source text (constrained to vocab.json), then map pieces -> vocab ids.
+    final pieces = engine.sourceSpm.encode(text, allowedPieces: engine.vocabSet);
     if (pieces.isEmpty) return '';
     final tokenIds = <int>[
       for (final piece in pieces) vocab[piece] ?? unkId,
       eosId,
     ];
     final seqLen = tokenIds.length;
+    final maxNewTokens = math.max(96, math.min(256, seqLen * 4));
 
     final inputTensor = OrtValueTensor.createTensorWithDataList(tokenIds, [1, seqLen]);
     final attentionMaskTensor =
@@ -270,6 +298,7 @@ class OnnxNmtServiceImpl implements NmtService {
           var bestLogit = double.negativeInfinity;
           for (var i = 0; i < last.length; i++) {
             if (i == padId || i == unkId || banned.contains(i)) continue;
+            if (step == 0 && i == eosId) continue;
             final v = (last[i] as num).toDouble();
             if (v > bestLogit) {
               bestLogit = v;
@@ -330,11 +359,18 @@ class OnnxNmtServiceImpl implements NmtService {
     }
     var out = buffer.toString().replaceAll(SentencePieceModel.spaceMarker, ' ').trim();
     if (targetIsJapanese) {
-      // The Japanese target side is space-segmented; remove spaces between CJK characters.
+      // Remove spaces between CJK characters and around CJK/sentence punctuation.
       const cjk = r'[\u3000-\u9fff\uff00-\uffef]';
       out = out.replaceAll(RegExp('(?<=$cjk) +(?=$cjk)'), '');
+      out = out.replaceAll(RegExp(r'\s+([。、．，！？!?」』）】])'), r'$1');
+      out = out.replaceAll(RegExp(r'([「『（【])\s+'), r'$1');
+    } else {
+      out = out.replaceAll(RegExp(r'\s+([.,!?;:\)\]])'), r'$1');
+      out = out.replaceAll(RegExp(r'([\(\[])\s+'), r'$1');
+      out = out.replaceAll(RegExp(r"\s+'(s|m|re|ve|ll|d|t)\b"), r"'$1");
+      out = out.replaceAll(RegExp(r"n\s+'t\b"), "n't");
     }
-    return out;
+    return out.trim();
   }
 
   @override

@@ -12,6 +12,7 @@ class TranslationState {
   final PipelineStatus status;
   final bool isContinuousListening;
   final TranslationLanguage activeLanguage;
+  final int recordingSeconds;
   final String? interimTranscript;
   final String? interimTranslation;
   final List<ChatMessage> messages;
@@ -22,6 +23,7 @@ class TranslationState {
     this.status = PipelineStatus.idle,
     this.isContinuousListening = false,
     this.activeLanguage = TranslationLanguage.english,
+    this.recordingSeconds = 0,
     this.interimTranscript,
     this.interimTranslation,
     this.messages = const [],
@@ -33,6 +35,7 @@ class TranslationState {
     PipelineStatus? status,
     bool? isContinuousListening,
     TranslationLanguage? activeLanguage,
+    int? recordingSeconds,
     String? interimTranscript,
     String? interimTranslation,
     List<ChatMessage>? messages,
@@ -47,6 +50,7 @@ class TranslationState {
       status: status ?? this.status,
       isContinuousListening: isContinuousListening ?? this.isContinuousListening,
       activeLanguage: clearActiveLanguage ? TranslationLanguage.english : (activeLanguage ?? this.activeLanguage),
+      recordingSeconds: recordingSeconds ?? this.recordingSeconds,
       interimTranscript: clearInterim ? null : (interimTranscript ?? this.interimTranscript),
       interimTranslation: clearInterim ? null : (interimTranslation ?? this.interimTranslation),
       messages: messages ?? this.messages,
@@ -56,18 +60,19 @@ class TranslationState {
   }
 }
 
-/// Riverpod Notifier managing the Continuous VAD Speech-to-Speech translation pipeline.
+/// Riverpod Notifier managing Speech-to-Speech and Text-to-Text translation pipelines.
 class TranslationPipelineNotifier extends Notifier<TranslationState> {
   StreamSubscription<Float32List>? _audioStreamSub;
-  Timer? _playbackTimer;
+  Timer? _recordingTimer;
   bool _isProcessingSegment = false;
   bool _isFinishingVoiceSpeech = false;
+  int _playbackRunId = 0;
 
   @override
   TranslationState build() {
     ref.onDispose(() {
       _audioStreamSub?.cancel();
-      _playbackTimer?.cancel();
+      _recordingTimer?.cancel();
     });
 
     // Pre-initialize offline models and unbundle assets on startup
@@ -184,21 +189,37 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   Future<void> toggleVoiceListening() async {
     if (state.status == PipelineStatus.recording) {
       await stopVoiceListening();
-    } else {
+    } else if (!state.status.isProcessing) {
       await startVoiceListening();
     }
   }
 
-  /// Starts voice speech recognition in the currently active language.
+  /// Starts voice listening and keeps recording until the user explicitly taps Stop.
+  ///
+  /// On native platforms, captures 16kHz PCM audio continuously via [AudioService]
+  /// for offline Whisper ASR without premature silence timeouts.
+  /// On Web, falls back to browser speech recognition.
   Future<void> startVoiceListening() async {
+    // Halt any ongoing TTS playback before opening microphone
+    if (state.status == PipelineStatus.playing) {
+      await stopAudioPlayback();
+    }
+
+    if (!kIsWeb) {
+      await _startOfflineRecorderListening();
+      return;
+    }
+
     final lang = state.activeLanguage;
     final sttService = ref.read(speechRecognitionServiceProvider);
 
     state = state.copyWith(
       status: PipelineStatus.recording,
+      recordingSeconds: 0,
       interimTranscript: '',
       clearError: true,
     );
+    _startRecordingTimer();
 
     try {
       await sttService.startListening(
@@ -211,43 +232,145 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         },
       );
     } catch (e) {
-      AppLogger.warning('Pipeline', 'SpeechRecognitionService notice: $e, falling back to audio recorder');
-      await startPushToTalk(lang);
+      AppLogger.warning('Pipeline', 'SpeechRecognitionService notice: $e');
+      _stopRecordingTimer();
+      state = state.copyWith(
+        status: PipelineStatus.error,
+        recordingSeconds: 0,
+        errorMessage: 'Speech recognition unavailable: $e',
+      );
     }
   }
 
-  /// Stops voice listening and translates recognized speech.
+  Future<void> _startOfflineRecorderListening() async {
+    try {
+      if (state.isContinuousListening) {
+        await stopContinuousListening(processPending: false);
+      }
+      final audioService = ref.read(audioServiceProvider);
+      final permitted = await audioService.hasPermission();
+      if (!permitted) {
+        state = state.copyWith(
+          status: PipelineStatus.error,
+          recordingSeconds: 0,
+          errorMessage: 'Microphone permission not granted.',
+        );
+        return;
+      }
+
+      final asrService = ref.read(asrServiceProvider);
+      await asrService.initialize();
+      await audioService.startRecording();
+
+      state = state.copyWith(
+        status: PipelineStatus.recording,
+        recordingSeconds: 0,
+        clearInterim: true,
+        clearError: true,
+      );
+      _startRecordingTimer();
+      AppLogger.info('Pipeline', 'Listening continuously until Stop is pressed...');
+    } catch (e, st) {
+      _stopRecordingTimer();
+      AppLogger.error('Pipeline', 'Failed to start microphone recording', e, st);
+      state = state.copyWith(
+        status: PipelineStatus.error,
+        recordingSeconds: 0,
+        errorMessage: 'Could not start microphone: $e',
+      );
+    }
+  }
+
+  void _startRecordingTimer() {
+    _recordingTimer?.cancel();
+    _recordingTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (state.status == PipelineStatus.recording) {
+        state = state.copyWith(recordingSeconds: state.recordingSeconds + 1);
+      } else {
+        _stopRecordingTimer();
+      }
+    });
+  }
+
+  void _stopRecordingTimer() {
+    _recordingTimer?.cancel();
+    _recordingTimer = null;
+  }
+
+  /// Stops voice listening and translates whatever was spoken into the appropriate language.
   Future<void> stopVoiceListening() async {
+    _stopRecordingTimer();
+    final audioService = ref.read(audioServiceProvider);
+
+    if (!kIsWeb && audioService.isRecording) {
+      try {
+        final samples = await audioService.stopRecording();
+        state = state.copyWith(recordingSeconds: 0);
+        if (samples.length < 3200) {
+          state = state.copyWith(
+            status: PipelineStatus.idle,
+            clearInterim: true,
+            errorMessage: 'Recording too short. Speak clearly and then press Stop.',
+          );
+          return;
+        }
+        await _processEndpointedSpeech(samples);
+      } catch (e, st) {
+        AppLogger.error('Pipeline', 'Failed stopping voice recording', e, st);
+        state = state.copyWith(
+          status: PipelineStatus.error,
+          recordingSeconds: 0,
+          errorMessage: 'Failed processing recorded audio: $e',
+        );
+      }
+      return;
+    }
+
     final sttService = ref.read(speechRecognitionServiceProvider);
     await sttService.stopListening();
     await _finishVoiceSpeech();
   }
 
+  /// Cancels active voice recording and discards captured audio without translating.
+  Future<void> cancelVoiceListening() async {
+    _stopRecordingTimer();
+    final audioService = ref.read(audioServiceProvider);
+    if (audioService.isRecording) {
+      await audioService.cancelRecording();
+    }
+    if (kIsWeb) {
+      await ref.read(speechRecognitionServiceProvider).cancelListening();
+    }
+    state = state.copyWith(
+      status: PipelineStatus.idle,
+      recordingSeconds: 0,
+      clearInterim: true,
+      clearError: true,
+    );
+  }
+
   Future<void> _finishVoiceSpeech() async {
     if (_isFinishingVoiceSpeech) return;
     _isFinishingVoiceSpeech = true;
+    _stopRecordingTimer();
     try {
       final sttService = ref.read(speechRecognitionServiceProvider);
       var transcript = state.interimTranscript?.trim() ?? '';
       if (transcript.isEmpty) {
         transcript = sttService.currentTranscript.trim();
       }
-      final lang = state.activeLanguage;
 
       if (transcript.isEmpty) {
-        if (ref.read(audioServiceProvider).isRecording) {
-          await stopPushToTalk(lang);
-          return;
-        }
         state = state.copyWith(
           status: PipelineStatus.idle,
+          recordingSeconds: 0,
           clearInterim: true,
         );
         return;
       }
 
-      state = state.copyWith(clearInterim: true);
-      await processText(transcript, explicitSourceLang: lang);
+      state = state.copyWith(recordingSeconds: 0, clearInterim: true);
+      await processText(transcript);
     } finally {
       _isFinishingVoiceSpeech = false;
     }
@@ -343,7 +466,8 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     }
   }
 
-  /// Automatically triggered by VAD endpointing or manual Done Speaking: Transcribes -> Translates -> Synthesizes.
+  /// Transcribes recorded speech via Whisper and translates to the appropriate target language.
+  /// Generated translations are displayed in chat and spoken when requested by the user.
   Future<void> _processEndpointedSpeech(
     Float32List speechSamples, {
     TranslationLanguage? forcedLanguage,
@@ -357,7 +481,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
 
     try {
       // 1. Transcribe speech via Multilingual Whisper ASR
-      state = state.copyWith(status: PipelineStatus.transcribing);
+      state = state.copyWith(status: PipelineStatus.transcribing, clearError: true);
       final asrService = ref.read(asrServiceProvider);
       final asrResult = await asrService.transcribe(speechSamples);
 
@@ -366,22 +490,26 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         AppLogger.info('Pipeline', 'ASR returned empty transcript (no speech detected).');
         state = state.copyWith(
           status: PipelineStatus.idle,
-          clearActiveLanguage: true,
           clearInterim: true,
-          errorMessage: 'No speech detected. Please speak closer to the microphone.',
+          errorMessage: 'No speech detected. Please speak clearly into the microphone.',
         );
         return;
       }
 
-      // Evaluate source and target languages
-      final sourceLang = forcedLanguage ?? asrResult.translationLanguage;
+      // Always resolve source language from the actual recognized script/language
+      // so English speech translates to Japanese and Japanese speech translates to English.
+      final detectedFromScript = detectLanguage(validTranscript);
+      final sourceLang = forcedLanguage ??
+          (detectedFromScript == TranslationLanguage.japanese || asrResult.isJapanese
+              ? TranslationLanguage.japanese
+              : TranslationLanguage.english);
       final targetLang = sourceLang.opposite;
       final isEnglish = sourceLang == TranslationLanguage.english;
       final messageId = DateTime.now().millisecondsSinceEpoch.toString();
 
       AppLogger.info(
         'Pipeline',
-        'VAD Speech: "$validTranscript" (Detected: ${sourceLang.name}). Translating via on-device NMT...',
+        'ASR Speech: "$validTranscript" (Detected: ${sourceLang.name} -> ${targetLang.name}). Translating on-device...',
       );
 
       // Optimistically append ChatMessage so UI shows user transcript immediately
@@ -421,41 +549,15 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       state = state.copyWith(
         status: PipelineStatus.idle,
         messages: updatedMessages,
-        clearActiveLanguage: true,
         clearInterim: true,
       );
 
-      // 3. Synthesize voice via TTS (Japanese TTS for EN->JA, English TTS for JA->EN)
-      try {
-        state = state.copyWith(
-          status: PipelineStatus.synthesizing,
-          interimTranslation: translatedText,
-        );
-
-        // Only speak if translation produced valid target text (never speak untranslated English in Japanese accent)
-        final isUntranslated = translatedText.trim().toLowerCase() == validTranscript.trim().toLowerCase() ||
-            (targetLang == TranslationLanguage.japanese && RegExp(r'^[a-zA-Z0-9\s.,!?]+$').hasMatch(translatedText.trim()));
-        if (!isUntranslated) {
-          final ttsPlayer = ref.read(ttsPlayerServiceProvider);
-          await ttsPlayer.speak(translatedText, language: targetLang);
-        } else {
-          AppLogger.warning('Pipeline', 'Text was not translated into target language; skipping voice readout.');
-        }
-      } catch (ttsErr) {
-        AppLogger.warning('Pipeline', 'TTS / audio playback notice: $ttsErr');
-      } finally {
-        state = state.copyWith(
-          status: PipelineStatus.idle,
-          clearPlaying: true,
-          clearInterim: true,
-        );
-      }
-
-      AppLogger.info('Pipeline', 'Speech translated and added to history.');
+      AppLogger.info('Pipeline', 'Speech transcribed and translated into chat history.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Error during speech processing', e, st);
       state = state.copyWith(
         status: PipelineStatus.error,
+        clearInterim: true,
         errorMessage: 'Speech processing error: $e',
       );
     } finally {
@@ -465,14 +567,18 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     }
   }
 
-  /// Submits manual text input directly into the translation pipeline,
-  /// translates via on-device NMT, synthesizes voice, and reads aloud.
+  /// Submits manual text input directly into the translation pipeline and
+  /// generates the translation on-device. Speech playback is triggered when requested.
   Future<void> processText(
     String input, {
     TranslationLanguage? explicitSourceLang,
   }) async {
     final text = input.trim();
-    if (text.isEmpty || state.status.isBusy) return;
+    if (text.isEmpty || state.status.isRecording || state.status.isProcessing) return;
+
+    if (state.status == PipelineStatus.playing) {
+      await stopAudioPlayback();
+    }
 
     final sourceLang = explicitSourceLang ?? detectLanguage(text);
     final targetLang = sourceLang.opposite;
@@ -481,10 +587,10 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
 
     AppLogger.info(
       'Pipeline',
-      'Manual text input: "$text" (${sourceLang.name} -> ${targetLang.name}). Translating with on-device NMT & synthesizing TTS.',
+      'Text input: "$text" (${sourceLang.name} -> ${targetLang.name}). Translating with on-device NMT.',
     );
 
-    // Optimistically create and append ChatMessage right away so UI updates immediately!
+    // Optimistically create and append ChatMessage right away so UI updates immediately
     final initialMessage = ChatMessage(
       id: messageId,
       sourceLang: sourceLang,
@@ -503,7 +609,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     );
 
     try {
-      // 1. On-device Translation
       final nmtService = ref.read(nmtServiceProvider);
       final translatedText = await nmtService.translate(
         text,
@@ -511,7 +616,6 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         targetLang: isEnglish ? 'ja' : 'en',
       );
 
-      // Update message with actual translated text in chat log immediately
       final updatedMessages = state.messages.map((m) {
         if (m.id == messageId) {
           return m.copyWith(translatedText: translatedText);
@@ -525,33 +629,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         clearInterim: true,
       );
 
-      // 2. TTS Voice Readout (Universal native TTS for EN and JA)
-      try {
-        state = state.copyWith(
-          status: PipelineStatus.synthesizing,
-          interimTranslation: translatedText,
-        );
-
-        // Only speak if translation produced valid target text (never speak untranslated English in Japanese accent)
-        final isUntranslated = translatedText.trim().toLowerCase() == text.trim().toLowerCase() ||
-            (targetLang == TranslationLanguage.japanese && RegExp(r'^[a-zA-Z0-9\s.,!?]+$').hasMatch(translatedText.trim()));
-        if (!isUntranslated) {
-          final ttsPlayer = ref.read(ttsPlayerServiceProvider);
-          await ttsPlayer.speak(translatedText, language: targetLang);
-        } else {
-          AppLogger.warning('Pipeline', 'Text was not translated into target language; skipping voice readout.');
-        }
-      } catch (ttsErr) {
-        AppLogger.warning('Pipeline', 'TTS / audio playback notice: $ttsErr');
-      } finally {
-        state = state.copyWith(
-          status: PipelineStatus.idle,
-          clearPlaying: true,
-          clearInterim: true,
-        );
-      }
-
-      AppLogger.info('Pipeline', 'Text translation complete and read aloud.');
+      AppLogger.info('Pipeline', 'Text translation complete.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Manual text translation error', e, st);
       final failedMessages = state.messages.map((m) {
@@ -569,38 +647,64 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     }
   }
 
-  /// Replays audio synthesis for a completed message in the chat log.
+  /// Speaks the translated text for a message when asked by the user, or stops
+  /// playback if that same message is currently speaking.
   Future<void> playMessageAudio(String messageId) async {
-    if (state.status.isBusy) return;
+    if (state.status.isRecording || state.status.isProcessing) return;
 
-    _playbackTimer?.cancel();
-    state = state.copyWith(
-      status: PipelineStatus.playing,
-      playingMessageId: messageId,
-    );
+    if (state.status == PipelineStatus.playing && state.playingMessageId == messageId) {
+      await stopAudioPlayback();
+      return;
+    }
 
+    final messageIndex = state.messages.indexWhere((m) => m.id == messageId);
+    if (messageIndex == -1) return;
+
+    final msg = state.messages[messageIndex];
+    if (msg.translatedText.trim().isEmpty || msg.translatedText == 'Translating...') {
+      return;
+    }
+
+    final runId = ++_playbackRunId;
     final updatedMessages = state.messages.map((m) {
       return m.copyWith(isPlaying: m.id == messageId);
     }).toList();
-    state = state.copyWith(messages: updatedMessages);
 
-    final messageIndex = state.messages.indexWhere((m) => m.id == messageId);
-    if (messageIndex != -1) {
-      final msg = state.messages[messageIndex];
-      try {
-        final ttsPlayer = ref.read(ttsPlayerServiceProvider);
-        await ttsPlayer.speak(msg.translatedText, language: msg.targetLang);
-      } catch (e) {
-        AppLogger.warning('Pipeline', 'Audio playback hardware notice: $e');
+    state = state.copyWith(
+      status: PipelineStatus.playing,
+      playingMessageId: messageId,
+      messages: updatedMessages,
+      clearError: true,
+    );
+
+    try {
+      final ttsPlayer = ref.read(ttsPlayerServiceProvider);
+      await ttsPlayer.speak(msg.translatedText, language: msg.targetLang);
+    } catch (e) {
+      AppLogger.warning('Pipeline', 'Audio playback notice: $e');
+    } finally {
+      if (runId == _playbackRunId) {
+        final resetMessages = state.messages.map((m) {
+          return m.copyWith(isPlaying: false);
+        }).toList();
+        state = state.copyWith(
+          status: PipelineStatus.idle,
+          clearPlaying: true,
+          messages: resetMessages,
+        );
       }
     }
+  }
 
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-
+  /// Stops active speech playback immediately.
+  Future<void> stopAudioPlayback() async {
+    _playbackRunId++;
+    try {
+      await ref.read(ttsPlayerServiceProvider).stop();
+    } catch (_) {}
     final resetMessages = state.messages.map((m) {
       return m.copyWith(isPlaying: false);
     }).toList();
-
     state = state.copyWith(
       status: PipelineStatus.idle,
       clearPlaying: true,

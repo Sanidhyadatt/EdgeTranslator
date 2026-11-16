@@ -143,6 +143,19 @@ class ModelLoader {
 
       AppLogger.info('ModelLoader', 'Found ${modelAssets.length} model assets (.onnx/.spm/.json/.txt) in bundle.');
 
+      // Remove legacy mismatched (1) files from nmt_en_ja if present from an older install
+      final legacyEnJaDir = Directory(p.join(baseDir.path, 'nmt_en_ja'));
+      if (await legacyEnJaDir.exists()) {
+        for (final entity in legacyEnJaDir.listSync()) {
+          if (entity is File && p.basename(entity.path).contains('(1)')) {
+            try {
+              await entity.delete();
+              AppLogger.info('ModelLoader', 'Removed legacy model file: ${entity.path}');
+            } catch (_) {}
+          }
+        }
+      }
+
       for (final assetPath in modelAssets) {
         try {
           final file = await copyAssetToStorage(assetPath, overwrite: overwrite);
@@ -282,31 +295,25 @@ class ModelLoader {
     final baseDir = await modelsDirectory;
 
     final enJaEncoder = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/encoder_model_quantized (1).onnx',
       'nmt_en_ja/encoder_model_quantized.onnx',
       'nmt_en_ja/encoder_model.onnx',
       'nmt_en_ja/encoder.onnx',
     ]);
     final enJaDecoder = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/decoder_model_quantized (1).onnx',
       'nmt_en_ja/decoder_model_quantized.onnx',
       'nmt_en_ja/decoder_model.onnx',
       'nmt_en_ja/decoder.onnx',
     ]);
     final enJaSourceSpm = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/source (1).spm',
       'nmt_en_ja/source.spm',
     ]);
     final enJaTargetSpm = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/target (1).spm',
       'nmt_en_ja/target.spm',
     ]);
     final enJaVocab = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/vocab (1).json',
       'nmt_en_ja/vocab.json',
     ]);
     final enJaTokenizerConfig = _resolveCandidateFile(baseDir, [
-      'nmt_en_ja/tokenizer_config (1).json',
       'nmt_en_ja/tokenizer_config.json',
     ]);
 

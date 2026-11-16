@@ -18,7 +18,8 @@ export '../core/services/translation_service.dart';
 
 /// Provider for universal Text-to-Speech audio readout across all platforms.
 final ttsPlayerServiceProvider = Provider<TtsPlayerService>((ref) {
-  final service = TtsPlayerService();
+  final offlineTts = ref.watch(ttsServiceProvider);
+  final service = TtsPlayerService(offlineTtsService: offlineTts);
   ref.onDispose(() => service.dispose());
   return service;
 });

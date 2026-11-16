@@ -63,13 +63,27 @@ class SentencePieceModel {
     return SentencePieceModel._(scores, maxLen, minScore - 10.0);
   }
 
-  /// Whitespace-only normalisation (ideographic space -> space, collapse runs).
+  /// NFKC-style normalisation matching SentencePiece `nmt_nfkc`:
+  /// folds full-width ASCII (`！`-`～`) to half-width, normalizes curly quotes
+  /// and dashes, converts ideographic/non-breaking spaces, and collapses runs.
   static String normalize(String text) {
-    return text
-        .replaceAll('\u3000', ' ')
-        .replaceAll('\u00A0', ' ')
-        .replaceAll(RegExp(r'\s+'), ' ')
-        .trim();
+    final sb = StringBuffer();
+    for (final rune in text.runes) {
+      if (rune >= 0xFF01 && rune <= 0xFF5E) {
+        sb.writeCharCode(rune - 0xFEE0);
+      } else if (rune == 0x3000 || rune == 0x00A0) {
+        sb.write(' ');
+      } else if (rune == 0x2018 || rune == 0x2019) {
+        sb.write("'");
+      } else if (rune == 0x201C || rune == 0x201D) {
+        sb.write('"');
+      } else if (rune == 0x2013 || rune == 0x2014) {
+        sb.write('-');
+      } else {
+        sb.writeCharCode(rune);
+      }
+    }
+    return sb.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
   }
 
   /// Candidate substitutes for a character the model does not contain
@@ -82,25 +96,39 @@ class SentencePieceModel {
     } else if (rune >= 0x21 && rune <= 0x7E) {
       out.add(String.fromCharCode(rune + 0xFEE0));
     }
-    const extra = {'.': '\u3002', ',': '\u3001', '\u3002': '.', '\u3001': ',', '"': '\u201D'};
+    const extra = {
+      '.': '\u3002',
+      ',': '\u3001',
+      '\u3002': '.',
+      '\u3001': ',',
+      "'": '\u2019',
+      '"': '\u201D',
+    };
     final mapped = extra[ch];
     if (mapped != null) out.add(mapped);
     return out;
   }
 
   /// Splits [text] into SentencePiece pieces (with the leading `▁` markers).
-  /// Characters that cannot be represented are emitted as `<unk>`.
-  List<String> encode(String text) {
+  /// When [allowedPieces] is provided (e.g. `vocab.json` keys), pieces outside
+  /// that vocabulary are ignored during Viterbi search so valid subwords are
+  /// chosen instead of emitting `<unk>`.
+  List<String> encode(String text, {Set<String>? allowedPieces}) {
     final normalized = normalize(text);
     if (normalized.isEmpty) return const [];
+
+    bool isUsable(String piece) {
+      return _scores.containsKey(piece) &&
+          (allowedPieces == null || allowedPieces.contains(piece));
+    }
 
     final prepared = '$spaceMarker${normalized.replaceAll(' ', spaceMarker)}';
     final chars = prepared.runes.map(String.fromCharCode).toList();
     for (var i = 0; i < chars.length; i++) {
       final ch = chars[i];
-      if (_scores.containsKey(ch)) continue;
+      if (isUsable(ch)) continue;
       for (final alt in _alternatives(ch)) {
-        if (_scores.containsKey(alt)) {
+        if (isUsable(alt)) {
           chars[i] = alt;
           break;
         }
@@ -120,8 +148,12 @@ class SentencePieceModel {
       final maxLen = (n - i) < _maxPieceLength ? (n - i) : _maxPieceLength;
       for (var len = 1; len <= maxLen; len++) {
         sb.write(chars[i + len - 1]);
-        final score = _scores[sb.toString()];
+        final candidatePiece = sb.toString();
+        final score = _scores[candidatePiece];
         if (score == null) continue;
+        if (allowedPieces != null && !allowedPieces.contains(candidatePiece)) {
+          continue;
+        }
         if (len == 1) singleCharKnown = true;
         final candidate = best[i] + score;
         if (candidate > best[i + len]) {

@@ -3,6 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../../../core/constants/app_constants.dart';
 import '../../../../core/theme/app_theme.dart';
+import '../../../../core/utils/language_detector.dart';
 import '../../../../providers/chat_translation_provider.dart';
 import '../../../../providers/translation_pipeline_provider.dart';
 import '../../domain/models/chat_message.dart';
@@ -131,6 +132,8 @@ class HomeScreen extends ConsumerWidget {
             StatusBanner(
               status: pipelineState.status,
               activeLanguage: pipelineState.activeLanguage,
+              recordingSeconds: pipelineState.recordingSeconds,
+              errorMessage: pipelineState.errorMessage,
             ),
 
             // Scrollable Conversation History Area (ListView with Right/Left aligned bubbles)
@@ -145,7 +148,6 @@ class HomeScreen extends ConsumerWidget {
               ),
             ),
 
-            // Bottom Controls Area
             // Bottom Controls Area: Minimal, simplified Unified Translation Input Bar
             Container(
               padding: const EdgeInsets.fromLTRB(16, 12, 16, 16),
@@ -165,13 +167,21 @@ class HomeScreen extends ConsumerWidget {
                   pipelineNotifier.setLanguage(lang);
                   chatNotifier.setInputLanguage(lang);
                 },
-                onSend: (text) => pipelineNotifier.processText(
-                  text,
-                  explicitSourceLang: pipelineState.activeLanguage,
-                ),
+                onSend: (text) {
+                  final sourceLang = _resolveTextSourceLanguage(
+                    text,
+                    fallback: pipelineState.activeLanguage,
+                  );
+                  pipelineNotifier.processText(
+                    text,
+                    explicitSourceLang: sourceLang,
+                  );
+                },
                 onMicTap: () => pipelineNotifier.toggleVoiceListening(),
+                onCancelRecording: () => pipelineNotifier.cancelVoiceListening(),
                 isRecording: pipelineState.status == PipelineStatus.recording,
-                isBusy: pipelineState.status.isBusy,
+                isBusy: pipelineState.status.isProcessing || pipelineState.status.isRecording,
+                recordingSeconds: pipelineState.recordingSeconds,
                 interimText: pipelineState.interimTranscript,
               ),
             ),
@@ -179,6 +189,15 @@ class HomeScreen extends ConsumerWidget {
         ),
       ),
     );
+  }
+
+  TranslationLanguage _resolveTextSourceLanguage(
+    String text, {
+    required TranslationLanguage fallback,
+  }) {
+    if (isJapaneseText(text)) return TranslationLanguage.japanese;
+    if (RegExp(r'[a-zA-Z]').hasMatch(text)) return TranslationLanguage.english;
+    return fallback;
   }
 
   void _confirmClearHistory(

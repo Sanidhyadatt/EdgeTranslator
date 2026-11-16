@@ -1,3 +1,4 @@
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -54,7 +55,7 @@ class ChatMessageCard extends StatelessWidget {
       alignment: alignment,
       child: Container(
         constraints: BoxConstraints(
-          maxWidth: MediaQuery.of(context).size.width * 0.85,
+          maxWidth: math.min(MediaQuery.of(context).size.width * 0.85, 640),
         ),
         margin: const EdgeInsets.only(bottom: 16),
         decoration: BoxDecoration(
@@ -127,38 +128,25 @@ class ChatMessageCard extends StatelessWidget {
                   ),
                   const SizedBox(width: 8),
                   // Copy Button
-                  InkWell(
-                    borderRadius: BorderRadius.circular(12),
-                    onTap: () {
-                      Clipboard.setData(ClipboardData(text: message.translatedText));
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Translation copied to clipboard'),
-                          duration: Duration(seconds: 1),
-                        ),
-                      );
-                    },
-                    child: const Padding(
-                      padding: EdgeInsets.all(4.0),
-                      child: Icon(Icons.copy_rounded, size: 14, color: AppTheme.textMuted),
-                    ),
-                  ),
-                  // Optional Playback Button
-                  if (onPlay != null) ...[
-                    const SizedBox(width: 4),
-                    InkWell(
+                  Tooltip(
+                    message: 'Copy translation',
+                    child: InkWell(
                       borderRadius: BorderRadius.circular(12),
-                      onTap: onPlay,
-                      child: Padding(
-                        padding: const EdgeInsets.all(4.0),
-                        child: Icon(
-                          message.isPlaying ? Icons.graphic_eq_rounded : Icons.volume_up_rounded,
-                          size: 15,
-                          color: message.isPlaying ? primaryAccent : AppTheme.textMuted,
-                        ),
+                      onTap: () {
+                        Clipboard.setData(ClipboardData(text: message.translatedText));
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('Translation copied to clipboard'),
+                            duration: Duration(seconds: 1),
+                          ),
+                        );
+                      },
+                      child: const Padding(
+                        padding: EdgeInsets.all(4.0),
+                        child: Icon(Icons.copy_rounded, size: 14, color: AppTheme.textMuted),
                       ),
                     ),
-                  ],
+                  ),
                 ],
               ),
 
@@ -216,6 +204,58 @@ class ChatMessageCard extends StatelessWidget {
                   ),
                 ],
               ),
+
+              if (onPlay != null &&
+                  message.translatedText.trim().isNotEmpty &&
+                  message.translatedText != 'Translating...') ...[
+                const SizedBox(height: 10),
+                Align(
+                  alignment: isEnglishSource ? Alignment.centerRight : Alignment.centerLeft,
+                  child: MouseRegion(
+                    cursor: SystemMouseCursors.click,
+                    child: InkWell(
+                      borderRadius: BorderRadius.circular(16),
+                      onTap: onPlay,
+                      child: AnimatedContainer(
+                        duration: const Duration(milliseconds: 200),
+                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                        decoration: BoxDecoration(
+                          color: message.isPlaying
+                              ? primaryAccent.withValues(alpha: 0.25)
+                              : primaryAccent.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(16),
+                          border: Border.all(
+                            color: message.isPlaying
+                                ? primaryAccent
+                                : primaryAccent.withValues(alpha: 0.35),
+                          ),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              message.isPlaying
+                                  ? Icons.stop_rounded
+                                  : Icons.volume_up_rounded,
+                              size: 16,
+                              color: primaryAccent,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              message.isPlaying ? 'Stop' : 'Speak',
+                              style: TextStyle(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: primaryAccent,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

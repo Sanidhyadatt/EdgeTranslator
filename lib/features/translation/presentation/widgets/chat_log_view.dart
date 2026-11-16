@@ -59,7 +59,7 @@ class _ChatLogViewState extends State<ChatLogView> {
 
   @override
   Widget build(BuildContext context) {
-    final showEmptyState = widget.messages.isEmpty && widget.status == PipelineStatus.idle;
+    final showEmptyState = widget.messages.isEmpty && !widget.status.isProcessing;
 
     if (showEmptyState) {
       return Center(
@@ -93,7 +93,7 @@ class _ChatLogViewState extends State<ChatLogView> {
               ),
               const SizedBox(height: 8),
               const Text(
-                'Tap the microphone or type below to translate.\nTranslations will appear here with instant speech playback.',
+                'Tap the microphone or type below to translate.\nTap Speak on any translation whenever you want it read aloud.',
                 textAlign: TextAlign.center,
                 style: TextStyle(
                   fontSize: 13,
@@ -135,7 +135,7 @@ class _ChatLogViewState extends State<ChatLogView> {
       controller: _scrollController,
       padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       physics: const BouncingScrollPhysics(),
-      itemCount: widget.messages.length + (widget.status.isBusy ? 1 : 0),
+      itemCount: widget.messages.length + (widget.status.isProcessing ? 1 : 0),
       itemBuilder: (context, index) {
         if (index < widget.messages.length) {
           final message = widget.messages[index];

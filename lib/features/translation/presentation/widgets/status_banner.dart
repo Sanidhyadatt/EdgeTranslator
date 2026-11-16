@@ -7,12 +7,22 @@ import '../../domain/models/chat_message.dart';
 class StatusBanner extends StatelessWidget {
   final PipelineStatus status;
   final TranslationLanguage? activeLanguage;
+  final int recordingSeconds;
+  final String? errorMessage;
 
   const StatusBanner({
     super.key,
     required this.status,
     this.activeLanguage,
+    this.recordingSeconds = 0,
+    this.errorMessage,
   });
+
+  String _formatDuration(int totalSeconds) {
+    final mins = totalSeconds ~/ 60;
+    final secs = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$mins:$secs';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -23,47 +33,55 @@ class StatusBanner extends StatelessWidget {
 
     switch (status) {
       case PipelineStatus.idle:
-        badgeColor = AppTheme.successEmerald;
-        badgeIcon = Icons.check_circle_outline_rounded;
-        statusTitle = 'System Ready';
-        statusDetail = 'Tap microphone or type text to translate';
+        if (errorMessage != null && errorMessage!.trim().isNotEmpty) {
+          badgeColor = AppTheme.warningAmber;
+          badgeIcon = Icons.info_outline_rounded;
+          statusTitle = 'Notice';
+          statusDetail = errorMessage!;
+        } else {
+          badgeColor = AppTheme.successEmerald;
+          badgeIcon = Icons.check_circle_outline_rounded;
+          statusTitle = 'System Ready';
+          statusDetail = 'Tap microphone to speak or type text to translate';
+        }
         break;
       case PipelineStatus.recording:
         badgeColor = AppTheme.errorRose;
         badgeIcon = Icons.mic_rounded;
-        final lang = activeLanguage?.name ?? 'Speech';
-        statusTitle = 'Listening ($lang)';
-        statusDetail = 'Tap microphone to finish speaking';
+        statusTitle = 'Listening (${_formatDuration(recordingSeconds)})';
+        statusDetail = 'Speak freely — press Stop when finished';
         break;
       case PipelineStatus.transcribing:
         badgeColor = AppTheme.primaryNeon;
         badgeIcon = Icons.graphic_eq_rounded;
-        statusTitle = 'Transcribing Audio';
-        statusDetail = 'Sherpa-ONNX Speech-to-Text inference...';
+        statusTitle = 'Transcribing Speech';
+        statusDetail = 'Offline Whisper speech-to-text inference...';
         break;
       case PipelineStatus.translating:
         badgeColor = AppTheme.primaryBlue;
         badgeIcon = Icons.translate_rounded;
-        statusTitle = 'Translating Text';
-        statusDetail = 'MarianMT Neural Machine Translation...';
+        statusTitle = 'Translating';
+        statusDetail = 'On-device neural translation...';
         break;
       case PipelineStatus.synthesizing:
         badgeColor = AppTheme.warningAmber;
         badgeIcon = Icons.record_voice_over_rounded;
         statusTitle = 'Synthesizing Speech';
-        statusDetail = 'Sherpa-ONNX VITS Text-to-Speech generation...';
+        statusDetail = 'Generating offline voice audio...';
         break;
       case PipelineStatus.playing:
         badgeColor = const Color(0xFF10B981);
         badgeIcon = Icons.volume_up_rounded;
-        statusTitle = 'Playing Audio';
-        statusDetail = 'Streaming voice translation playback';
+        statusTitle = 'Speaking Translation';
+        statusDetail = 'Playing generated speech — tap Stop to pause';
         break;
       case PipelineStatus.error:
         badgeColor = AppTheme.errorRose;
         badgeIcon = Icons.error_outline_rounded;
         statusTitle = 'Pipeline Interrupted';
-        statusDetail = 'An error occurred during processing';
+        statusDetail = (errorMessage != null && errorMessage!.trim().isNotEmpty)
+            ? errorMessage!
+            : 'An error occurred during processing';
         break;
     }
 
