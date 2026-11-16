@@ -6,6 +6,7 @@ import '../core/utils/app_logger.dart';
 import '../core/utils/language_detector.dart';
 import '../features/translation/domain/models/chat_message.dart';
 import 'service_providers.dart';
+import 'settings_provider.dart';
 
 /// State of the translation pipeline with continuous VAD listening support.
 class TranslationState {
@@ -647,12 +648,19 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     }
   }
 
-  /// Speaks the translated text for a message when asked by the user, or stops
-  /// playback if that same message is currently speaking.
-  Future<void> playMessageAudio(String messageId) async {
+  /// Speaks a message's translated (or [speakOriginal] source) text aloud at
+  /// [speed] (defaults to [settingsProvider] speechRate), or stops if that
+  /// message is already playing.
+  Future<void> playMessageAudio(
+    String messageId, {
+    bool speakOriginal = false,
+    double? speed,
+  }) async {
     if (state.status.isRecording || state.status.isProcessing) return;
 
-    if (state.status == PipelineStatus.playing && state.playingMessageId == messageId) {
+    if (!speakOriginal &&
+        state.status == PipelineStatus.playing &&
+        state.playingMessageId == messageId) {
       await stopAudioPlayback();
       return;
     }
@@ -661,25 +669,30 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     if (messageIndex == -1) return;
 
     final msg = state.messages[messageIndex];
-    if (msg.translatedText.trim().isEmpty || msg.translatedText == 'Translating...') {
+    final spokenText = speakOriginal ? msg.originalText : msg.translatedText;
+    final spokenLang = speakOriginal ? msg.sourceLang : msg.targetLang;
+    if (spokenText.trim().isEmpty || spokenText == 'Translating...') {
       return;
     }
 
     final runId = ++_playbackRunId;
+    final effectiveSpeed = speed ?? ref.read(settingsProvider).speechRate;
     final updatedMessages = state.messages.map((m) {
-      return m.copyWith(isPlaying: m.id == messageId);
+      return m.copyWith(isPlaying: !speakOriginal && m.id == messageId);
     }).toList();
 
     state = state.copyWith(
       status: PipelineStatus.playing,
-      playingMessageId: messageId,
+      playingMessageId: speakOriginal ? null : messageId,
+      clearPlaying: speakOriginal,
       messages: updatedMessages,
       clearError: true,
     );
 
     try {
       final ttsPlayer = ref.read(ttsPlayerServiceProvider);
-      await ttsPlayer.speak(msg.translatedText, language: msg.targetLang);
+      ttsPlayer.setSpeechRate(effectiveSpeed);
+      await ttsPlayer.speak(spokenText, language: spokenLang);
     } catch (e) {
       AppLogger.warning('Pipeline', 'Audio playback notice: $e');
     } finally {
@@ -694,6 +707,55 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         );
       }
     }
+  }
+
+  /// Speaks an arbitrary preview phrase (e.g. from Settings speech-rate test)
+  /// without polluting the chat history, or stops if already playing preview.
+  Future<void> speakPreview(
+    String text, {
+    required TranslationLanguage language,
+    double? speed,
+  }) async {
+    if (state.status.isRecording || state.status.isProcessing) return;
+
+    if (state.status == PipelineStatus.playing && state.playingMessageId == null) {
+      await stopAudioPlayback();
+      return;
+    }
+
+    final runId = ++_playbackRunId;
+    final effectiveSpeed = speed ?? ref.read(settingsProvider).speechRate;
+    final resetMessages = state.messages.map((m) => m.copyWith(isPlaying: false)).toList();
+
+    state = state.copyWith(
+      status: PipelineStatus.playing,
+      clearPlaying: true,
+      messages: resetMessages,
+      clearError: true,
+    );
+
+    try {
+      final ttsPlayer = ref.read(ttsPlayerServiceProvider);
+      ttsPlayer.setSpeechRate(effectiveSpeed);
+      await ttsPlayer.speak(text, language: language);
+    } catch (e) {
+      AppLogger.warning('Pipeline', 'Preview playback notice: $e');
+    } finally {
+      if (runId == _playbackRunId) {
+        state = state.copyWith(
+          status: PipelineStatus.idle,
+          clearPlaying: true,
+        );
+      }
+    }
+  }
+
+  /// Dismisses any visible notice/error message and returns error state to idle.
+  void dismissError() {
+    state = state.copyWith(
+      status: state.status == PipelineStatus.error ? PipelineStatus.idle : state.status,
+      clearError: true,
+    );
   }
 
   /// Stops active speech playback immediately.

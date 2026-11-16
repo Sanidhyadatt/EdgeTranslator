@@ -220,7 +220,7 @@ void main() {
     expect(container.read(translationPipelineProvider).messages, isEmpty);
   });
 
-  testWidgets('UI shows listening Stop/Cancel controls while recording and Speak button on generated card', (WidgetTester tester) async {
+  testWidgets('UI supports English/Japanese instruction modes, Pure Recording Done/Cancel, 0.8x Slow, History, and Settings without engines card', (WidgetTester tester) async {
     final audio = RecordingFakeAudioService();
     final asr = FakeAsrService(const AsrResult(text: 'Where is Shibuya station?', language: 'en'));
     final nmt = RecordingFakeNmtService();
@@ -239,28 +239,173 @@ void main() {
     );
     await tester.pump();
 
-    // Tap Mic -> enters listening mode with Stop and Cancel controls
-    await tester.tap(find.byIcon(Icons.mic_rounded));
+    // Tap primary Mic FAB -> enters Pure Recording with English instructions by default
+    await tester.tap(find.byIcon(Icons.mic_rounded).first);
     await tester.pump();
 
-    expect(find.text('Stop'), findsOneWidget);
-    expect(find.byIcon(Icons.close_rounded), findsOneWidget);
+    expect(find.text('Done'), findsOneWidget);
+    expect(find.text('Cancel'), findsOneWidget);
+    expect(find.textContaining('Listening…', findRichText: true), findsOneWidget);
+    expect(find.text('Speak freely — tap Done when finished'), findsOneWidget);
     expect(tts.spokenCalls, isEmpty);
 
-    // Tap Stop -> translates English -> Japanese and renders Speak pill
-    await tester.tap(find.text('Stop'));
+    // Tap Done -> translates English -> Japanese and renders Hero card with Listen & 0.8x Slow
+    await tester.tap(find.text('Done'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
     expect(find.text('Where is Shibuya station?'), findsOneWidget);
     expect(find.text('渋谷駅はどこですか。'), findsOneWidget);
-    expect(find.text('Speak'), findsOneWidget);
+    expect(find.text('Listen'), findsOneWidget);
+    expect(find.text('0.8x Slow'), findsOneWidget);
+    expect(find.text('Expand'), findsOneWidget);
     expect(tts.spokenCalls, isEmpty);
 
-    // Tap Speak -> speaks the translated Japanese text
-    await tester.tap(find.text('Speak'));
+    // Enable 0.8x Slow and tap Listen -> speaks at 0.8x speed
+    await tester.tap(find.text('0.8x Slow'));
+    await tester.pump();
+    await tester.tap(find.text('Listen'));
     await tester.pump();
     expect(tts.spokenCalls, [('渋谷駅はどこですか。', TranslationLanguage.japanese)]);
+    expect(tts.speechRate, closeTo(0.8, 0.001));
+
+    // Tap Expand -> opens fullscreen display modal and closes cleanly
+    await tester.tap(find.text('Expand'));
+    await tester.pumpAndSettle();
+    expect(find.text('Display Translation'), findsOneWidget);
+    expect(find.text('Play Audio'), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.close_rounded));
+    await tester.pumpAndSettle();
+
+    // Open Settings tab -> ON-DEVICE ENGINES card is removed; switch UI mode to 日本語
+    await tester.tap(find.text('Settings'));
+    await tester.pump();
+    expect(find.text('ON-DEVICE ENGINES'), findsNothing);
+    expect(find.text('Whisper Tiny INT8 + Silero VAD'), findsNothing);
+    expect(find.text('APP LANGUAGE'), findsOneWidget);
+
+    // Adjust speed to 1.2x Fast & verify speechRate updates
+    await tester.tap(find.text('1.2x Fast'));
+    await tester.pump();
+    expect(tts.speechRate, closeTo(1.2, 0.001));
+    expect(find.text('1.20x'), findsOneWidget);
+
+    // Switch entire UI to Japanese instructions (日本語)
+    await tester.tap(find.text('日本語').first);
+    await tester.pump();
+
+    expect(find.text('設定'), findsWidgets);
+    expect(find.text('翻訳'), findsOneWidget);
+    expect(find.text('履歴'), findsOneWidget);
+    expect(find.text('アプリ表示言語'), findsOneWidget);
+    expect(find.text('音声・再生速度'), findsOneWidget);
+
+    // Switch to Translate in Japanese mode -> Hero buttons & recording instructions are in Japanese
+    await tester.tap(find.text('翻訳'));
+    await tester.pump();
+    expect(find.text('0.8倍速'), findsOneWidget);
+    expect(find.text('拡大'), findsOneWidget);
+    expect(find.text('聞く'), findsOneWidget);
+
+    // Start recording in Japanese UI mode -> instructions show in Japanese
+    await tester.tap(find.byIcon(Icons.mic_rounded).first);
+    await tester.pump();
+    expect(find.textContaining('聞き取っています…', findRichText: true), findsOneWidget);
+    expect(find.text('話し終わったら「完了」を押してください'), findsOneWidget);
+    expect(find.text('取消'), findsOneWidget);
+    expect(find.text('完了'), findsOneWidget);
+    await tester.tap(find.text('取消'));
+    await tester.pump();
+
+    // Open History tab in Japanese mode -> clear with localized confirmation dialog
+    await tester.tap(find.text('履歴'));
+    await tester.pump();
+    expect(find.text('渋谷駅はどこですか。'), findsOneWidget);
+    await tester.tap(find.text('すべて削除'));
+    await tester.pumpAndSettle();
+    expect(find.text('履歴をすべて削除しますか？'), findsOneWidget);
+    await tester.tap(find.text('削除する'));
+    await tester.pumpAndSettle();
+    expect(find.text('履歴はまだありません'), findsOneWidget);
+  });
+
+  test('TtsPlayerService maps user speed multiplier cleanly to OS flutter_tts rate', () {
+    expect(TtsPlayerService.toFlutterTtsRate(1.0), closeTo(0.5, 0.001));
+    expect(TtsPlayerService.toFlutterTtsRate(0.8), closeTo(0.4, 0.001));
+    expect(TtsPlayerService.toFlutterTtsRate(1.2), closeTo(0.6, 0.001));
+  });
+
+  testWidgets('Phone 390x844 layout renders without overflow across History search, Settings test audio, and auto-detect toggle', (WidgetTester tester) async {
+    await tester.binding.setSurfaceSize(const Size(390, 844));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final audio = RecordingFakeAudioService();
+    final asr = FakeAsrService(const AsrResult(text: 'Where is Shibuya station?', language: 'en'));
+    final nmt = RecordingFakeNmtService();
+    final tts = SpyTtsPlayerService();
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          audioServiceProvider.overrideWithValue(audio),
+          asrServiceProvider.overrideWithValue(asr),
+          nmtServiceProvider.overrideWithValue(nmt),
+          ttsPlayerServiceProvider.overrideWithValue(tts),
+        ],
+        child: const EdgeTranslatorApp(),
+      ),
+    );
+    await tester.pump();
+
+    // Generate two translations (one EN->JA, one JA->EN)
+    await tester.tap(find.text('Type'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), 'Where is Shibuya station?');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    await tester.tap(find.text('Type'));
+    await tester.pump();
+    await tester.enterText(find.byType(TextField), '渋谷駅はどこですか。');
+    await tester.pump();
+    await tester.tap(find.byIcon(Icons.arrow_upward_rounded));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+
+    // Switch to History -> filter with search -> open earlier item in Translate
+    await tester.tap(find.text('History'));
+    await tester.pump();
+    expect(find.text('All (2)'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'Shibuya station');
+    await tester.pump();
+    expect(find.text('Where is Shibuya station?'), findsWidgets);
+
+    // Tapping a phrase promotes it to Hero in Translate
+    await tester.tap(find.text('Where is Shibuya station?').last);
+    await tester.pump();
+    expect(find.text('Type'), findsOneWidget);
+    expect(find.text('EN → JA'), findsOneWidget);
+
+    // Switch to Settings -> test EN voice, test JA voice, toggle auto-detect
+    await tester.tap(find.text('Settings'));
+    await tester.pump();
+
+    await tester.tap(find.text('Test EN Voice'));
+    await tester.pump();
+    expect(tts.spokenCalls.last, ('Hello, this is a speech speed preview.', TranslationLanguage.english));
+
+    await tester.tap(find.text('Test JA Voice'));
+    await tester.pump();
+    expect(tts.spokenCalls.last, ('こんにちは、音声速度のテストです。', TranslationLanguage.japanese));
+
+    await tester.ensureVisible(find.text('Auto-detect typed script'));
+    await tester.pump();
+    await tester.tap(find.text('Auto-detect typed script'));
+    await tester.pump();
+    expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value, false);
   });
 
   test('JapaneseMeloG2p handles lexicon words, hiragana/katakana fallback, and punctuation', () {

@@ -79,6 +79,12 @@ flutter:
     - assets/models/nmt_ja_en/
     - assets/models/tts_en/
     - assets/models/tts_ja/
+    - assets/images/washi_wallpaper.jpg
+
+  fonts:
+    - family: IKHOCursive
+      fonts:
+        - asset: assets/fonts/IKHOCursive.ttf
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images

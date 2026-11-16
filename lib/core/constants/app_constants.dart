@@ -1,9 +1,10 @@
-/// Application-wide constants for Edge Translator.
+/// Application-wide constants for IKHO.
 class AppConstants {
   AppConstants._();
 
-  static const String appName = 'Edge Translator';
+  static const String appName = 'IKHO';
   static const String appTagline = '100% Offline Real-Time Voice Translation';
+  static const String washiWallpaperAsset = 'assets/images/washi_wallpaper.jpg';
 
   // Audio Configuration
   static const int audioSampleRate = 16000;

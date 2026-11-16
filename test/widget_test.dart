@@ -87,7 +87,7 @@ void main() {
       (call) async => 1,
     );
   });
-  testWidgets('EdgeTranslatorApp smoke test verifies header, unified language switch, mic, and send button', (WidgetTester tester) async {
+  testWidgets('EdgeTranslatorApp smoke test verifies IKHO header, direction pill, dock, and tabs', (WidgetTester tester) async {
     await tester.pumpWidget(
       ProviderScope(
         overrides: [
@@ -97,23 +97,29 @@ void main() {
       ),
     );
 
-    // Header & offline badge
-    expect(find.text('Edge Translator'), findsOneWidget);
-    expect(find.text('100% Offline'), findsOneWidget);
+    // Cursive IKHO header & Hanko seal (no offline badge or clutter)
+    expect(find.text('IKHO'), findsOneWidget);
+    expect(find.text('端'), findsOneWidget);
+    expect(find.text('100% Offline'), findsNothing);
 
-    // Unified language switch button
-    expect(find.text('🇺🇸 English'), findsOneWidget);
-    expect(find.text('🇯🇵 日本語'), findsOneWidget);
+    // Direction pill (default English UI mode)
+    expect(find.text('English'), findsOneWidget);
+    expect(find.text('Japanese'), findsWidgets);
 
-    // Mic & Send icons
-    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
-    expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
+    // Floating dock (Type + Mic FAB + quick opposite mic)
+    expect(find.text('Type'), findsOneWidget);
+    expect(find.byIcon(Icons.mic_rounded), findsNWidgets(2));
 
-    // Manual text input TextField
+    // Three localized bottom navigation tabs
+    expect(find.text('Translate'), findsOneWidget);
+    expect(find.text('History'), findsOneWidget);
+    expect(find.text('Settings'), findsOneWidget);
+
+    // Tapping Type reveals the inline text input and Send button
+    await tester.tap(find.text('Type'));
+    await tester.pump();
     expect(find.byType(TextField), findsOneWidget);
-
-    // Initial status banner
-    expect(find.text('System Ready'), findsOneWidget);
+    expect(find.byIcon(Icons.arrow_upward_rounded), findsOneWidget);
   });
 
   test('detectLanguage correctly distinguishes Japanese and English characters', () {

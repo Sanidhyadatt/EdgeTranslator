@@ -11,7 +11,7 @@ import '../../features/translation/domain/services/tts_service.dart';
 
 /// Universal Text-to-Speech player combining 100% offline ONNX VITS synthesis
 /// (e.g. Melo-VITS for Japanese on all native platforms) with native OS TTS
-/// (`flutter_tts`) for English / Web / fallback.
+/// (`flutter_tts`) for English / Web / fallback, supporting live speech speed control.
 class TtsPlayerService {
   final FlutterTts _flutterTts = FlutterTts();
   final TtsService? _offlineTtsService;
@@ -19,22 +19,36 @@ class TtsPlayerService {
 
   bool _isInitialized = false;
   bool _isSpeaking = false;
+  double _speechRate = 1.0;
   int _speakToken = 0;
   Completer<void>? _playbackCompleter;
   StreamSubscription<void>? _completeSub;
   String? _lastTempWavPath;
 
   bool get isSpeaking => _isSpeaking;
+  double get speechRate => _speechRate;
 
   TtsPlayerService({
     this._offlineTtsService,
     this._audioPlayer,
-  });
+    double initialSpeechRate = 1.0,
+  }) : _speechRate = initialSpeechRate.clamp(0.5, 1.5);
+
+  /// Updates the default speech speed multiplier (`0.6` .. `1.3`, default `1.0`).
+  void setSpeechRate(double rate) {
+    _speechRate = rate.clamp(0.5, 1.5);
+  }
+
+  /// Converts a user-facing speed multiplier (`1.0` = normal, `0.8` = slow)
+  /// to `flutter_tts`'s native `[0.0..1.0]` scale where `0.5` is normal speed.
+  static double toFlutterTtsRate(double speed) {
+    return (0.5 * speed).clamp(0.15, 1.0);
+  }
 
   Future<void> initialize() async {
     if (_isInitialized) return;
     try {
-      await _flutterTts.setSpeechRate(0.5);
+      await _flutterTts.setSpeechRate(toFlutterTtsRate(_speechRate));
       await _flutterTts.setVolume(1.0);
       await _flutterTts.setPitch(1.0);
       await _flutterTts.awaitSpeakCompletion(true);
@@ -45,13 +59,18 @@ class TtsPlayerService {
     }
   }
 
-  /// Speaks text aloud in the specified language (English or Japanese) and
-  /// completes once playback finishes or is stopped.
-  Future<void> speak(String text, {required TranslationLanguage language}) async {
+  /// Speaks text aloud in the specified language (English or Japanese) at the
+  /// configured [speechRate] and completes once playback finishes or is stopped.
+  Future<void> speak(
+    String text, {
+    required TranslationLanguage language,
+  }) async {
     final clean = text.trim();
     if (clean.isEmpty) return;
 
     await stop();
+
+    final effectiveSpeed = _speechRate.clamp(0.5, 1.5);
 
     if (!_isInitialized) {
       await initialize();
@@ -71,7 +90,11 @@ class TtsPlayerService {
         final canUseOffline = offline is! SherpaTtsServiceImpl || offline.isAvailableFor(shortCode);
         if (token != _speakToken) return;
         if (canUseOffline) {
-          final wavPath = await offline.synthesize(clean, language: shortCode);
+          final wavPath = await offline.synthesize(
+            clean,
+            language: shortCode,
+            speed: effectiveSpeed,
+          );
           if (token != _speakToken) return;
           if (wavPath.isNotEmpty && File(wavPath).existsSync()) {
             await _playWavFile(wavPath, token);
@@ -82,8 +105,13 @@ class TtsPlayerService {
 
       // 2. Fallback / English native OS TTS via flutter_tts
       if (token != _speakToken) return;
-      AppLogger.info('TtsPlayerService', 'Speaking via OS TTS [$localeCode]: "$clean"');
+      final ttsRate = toFlutterTtsRate(effectiveSpeed);
+      AppLogger.info(
+        'TtsPlayerService',
+        'Speaking via OS TTS [$localeCode @ ${effectiveSpeed.toStringAsFixed(2)}x -> rate=$ttsRate]: "$clean"',
+      );
       await _flutterTts.setLanguage(localeCode);
+      await _flutterTts.setSpeechRate(ttsRate);
       await _flutterTts.speak(clean);
     } catch (e) {
       AppLogger.warning('TtsPlayerService', 'Error during TTS speech playback: $e');
