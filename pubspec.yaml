@@ -68,17 +68,8 @@ flutter:
   # the material Icons class.
   uses-material-design: true
 
-  # Assets section for local offline ONNX models
+  # UI visual assets (on-device ML models are delivered via the Android :ai_models install-time AI pack)
   assets:
-    - assets/models/README.md
-    - assets/models/tiny-encoder.int8.onnx
-    - assets/models/tiny-decoder.int8.onnx
-    - assets/models/tiny-tokens.txt
-    - assets/models/silero_vad.onnx
-    - assets/models/nmt_en_ja/
-    - assets/models/nmt_ja_en/
-    - assets/models/tts_en/
-    - assets/models/tts_ja/
     - assets/images/washi_wallpaper.jpg
 
   fonts:

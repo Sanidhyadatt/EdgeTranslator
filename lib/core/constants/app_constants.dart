@@ -16,26 +16,24 @@ class AppConstants {
   static const String defaultTargetLanguage = 'Japanese';
   static const String defaultTargetCode = 'ja';
 
-  // Model Asset Paths
-  static const String modelsBasePath = 'assets/models';
-  static const String asrModelDir = '$modelsBasePath/asr';
-  static const String nmtModelDir = '$modelsBasePath/nmt';
-  static const String ttsModelDir = '$modelsBasePath/tts';
+  // On-device AI Pack Model Paths (delivered via Android :ai_models install-time pack)
+  static const String aiModelsPackAssetRoot = 'models';
+  static const String sileroVadFile = 'silero_vad.onnx';
 
-  // Multilingual Whisper ASR Model Files
+  // Multilingual SenseVoice Small (INT8) ASR Model Files
+  static const String senseVoiceModelFile = 'asr/sense-voice.int8.onnx';
+  static const String senseVoiceTokensFile = 'asr/sense-voice-tokens.txt';
+
+  // Legacy Whisper ASR fallback filenames
   static const String whisperEncoderFile = 'tiny-encoder.int8.onnx';
   static const String whisperDecoderFile = 'tiny-decoder.int8.onnx';
   static const String whisperTokensFile = 'tiny-tokens.txt';
 
-  static const String whisperEncoderAssetPath = '$modelsBasePath/$whisperEncoderFile';
-  static const String whisperDecoderAssetPath = '$modelsBasePath/$whisperDecoderFile';
-  static const String whisperTokensAssetPath = '$modelsBasePath/$whisperTokensFile';
+  // MarianMT NMT Model Subdirectories (within local models directory)
+  static const String nmtEnJaSubdir = 'nmt_en_ja';
+  static const String nmtJaEnSubdir = 'nmt_ja_en';
 
-  // MarianMT NMT Model Paths
-  static const String nmtEnJaDir = '$modelsBasePath/nmt_en_ja';
-  static const String nmtJaEnDir = '$modelsBasePath/nmt_ja_en';
-
-  // Sherpa TTS Model Paths
-  static const String ttsEnDir = '$modelsBasePath/tts_en';
-  static const String ttsJaDir = '$modelsBasePath/tts_ja';
+  // Sherpa / ORT TTS Model Subdirectories (within local models directory)
+  static const String ttsEnSubdir = 'tts_en';
+  static const String ttsJaSubdir = 'tts_ja';
 }

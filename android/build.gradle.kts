@@ -17,7 +17,7 @@ subprojects {
 }
 
 subprojects {
-    if (project.name != "app") {
+    if (project.name != "app" && project.name != "ai_models") {
         val configureAndroid = {
             val android = project.extensions.findByName("android")
             if (android != null) {
@@ -88,7 +88,9 @@ subprojects {
 }
 
 subprojects {
-    project.evaluationDependsOn(":app")
+    if (project.name != "ai_models") {
+        project.evaluationDependsOn(":app")
+    }
 }
 
 tasks.register<Delete>("clean") {

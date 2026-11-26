@@ -8,8 +8,8 @@ import '../utils/app_logger.dart';
 
 /// 100% offline translation service.
 ///
-/// Translation runs entirely on-device with the MarianMT ONNX models that ship
-/// pre-installed inside the app (`assets/models/nmt_en_ja`, `nmt_ja_en`).
+/// Translation runs entirely on-device with the MarianMT ONNX models delivered
+/// in the install-time AI pack (`nmt_en_ja`, `nmt_ja_en`).
 /// There is no network access, no model download and no online fallback.
 /// If the native ONNX engine cannot run (e.g. Flutter web), the embedded
 /// phrase engine is used instead.
@@ -27,7 +27,9 @@ class TranslationService {
     try {
       await (_initFuture ??= nmt.initialize());
     } catch (e, st) {
+      _initFuture = null;
       AppLogger.error('TranslationService', 'Offline engine init failed', e, st);
+      return false;
     }
     return true;
   }

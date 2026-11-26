@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import '../../../../core/l10n/app_strings.dart';
 import '../../../../core/theme/app_theme.dart';
 import '../../domain/models/chat_message.dart';
+import 'japanese_cat_face.dart';
 
 /// Pure Console translation workspace matching Stitch's Sumi & Washi editorial layout.
 class PureConsoleView extends StatefulWidget {
@@ -18,7 +19,7 @@ class PureConsoleView extends StatefulWidget {
   final String? errorMessage;
   final VoidCallback onDismissError;
   final ValueChanged<String> onSendText;
-  final ValueChanged<TranslationLanguage> onStartMic;
+  final VoidCallback onStartMic;
   final ValueChanged<String> onPlayTranslation;
   final ValueChanged<String> onPlayOriginal;
   final ValueChanged<ChatMessage> onOpenFullscreen;
@@ -239,9 +240,7 @@ class _PureConsoleViewState extends State<PureConsoleView> {
                     isComposerOpen: _isComposerOpen,
                     isBusy: widget.isBusy,
                     onTypeTap: _toggleComposer,
-                    onMicTap: () => widget.onStartMic(widget.activeLanguage),
-                    onQuickOppositeMicTap: () =>
-                        widget.onStartMic(widget.activeLanguage.opposite),
+                    onMicTap: widget.onStartMic,
                   ),
                 ],
               ),
@@ -893,7 +892,6 @@ class _FloatingDock extends StatelessWidget {
   final bool isBusy;
   final VoidCallback onTypeTap;
   final VoidCallback onMicTap;
-  final VoidCallback onQuickOppositeMicTap;
 
   const _FloatingDock({
     required this.strings,
@@ -902,12 +900,10 @@ class _FloatingDock extends StatelessWidget {
     required this.isBusy,
     required this.onTypeTap,
     required this.onMicTap,
-    required this.onQuickOppositeMicTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final opposite = activeLanguage.opposite;
     return Center(
       heightFactor: 1.0,
       child: ConstrainedBox(
@@ -927,36 +923,42 @@ class _FloatingDock extends StatelessWidget {
             ],
           ),
           child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              InkWell(
-                onTap: onTypeTap,
-                borderRadius: BorderRadius.circular(20),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.keyboard_rounded,
-                        size: 20,
-                        color: isComposerOpen
-                            ? AppTheme.cinnabar
-                            : AppTheme.sumiMuted,
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: InkWell(
+                    onTap: onTypeTap,
+                    borderRadius: BorderRadius.circular(20),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
                       ),
-                      const SizedBox(width: 5),
-                      Text(
-                        strings.typeButton,
-                        style: AppTheme.sansStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: isComposerOpen
-                              ? AppTheme.cinnabar
-                              : AppTheme.sumiMuted,
-                        ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Icon(
+                            Icons.keyboard_rounded,
+                            size: 20,
+                            color: isComposerOpen
+                                ? AppTheme.cinnabar
+                                : AppTheme.sumiMuted,
+                          ),
+                          const SizedBox(width: 5),
+                          Text(
+                            strings.typeButton,
+                            style: AppTheme.sansStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w500,
+                              color: isComposerOpen
+                                  ? AppTheme.cinnabar
+                                  : AppTheme.sumiMuted,
+                            ),
+                          ),
+                        ],
                       ),
-                    ],
+                    ),
                   ),
                 ),
               ),
@@ -984,36 +986,12 @@ class _FloatingDock extends StatelessWidget {
                   ),
                 ),
               ),
-              InkWell(
-                onTap: isBusy ? null : onQuickOppositeMicTap,
-                borderRadius: BorderRadius.circular(20),
-                child: Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        strings.langName(opposite),
-                        style: opposite == TranslationLanguage.japanese
-                            ? AppTheme.minchoStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.sumi,
-                              )
-                            : AppTheme.sansStyle(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w600,
-                                color: AppTheme.sumi,
-                              ),
-                      ),
-                      const SizedBox(width: 3),
-                      const Icon(
-                        Icons.mic_rounded,
-                        size: 16,
-                        color: AppTheme.cinnabar,
-                      ),
-                    ],
+              Expanded(
+                child: Align(
+                  alignment: Alignment.centerRight,
+                  child: JapaneseCatFace(
+                    size: 36,
+                    tooltip: strings.isJa ? '招き猫' : 'Maneki-neko',
                   ),
                 ),
               ),

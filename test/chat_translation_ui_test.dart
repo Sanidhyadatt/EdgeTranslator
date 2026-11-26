@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'package:edge_translator/main.dart';
 import 'package:edge_translator/features/translation/domain/models/chat_message.dart';
+import 'package:edge_translator/features/translation/presentation/widgets/japanese_cat_face.dart';
 import 'package:edge_translator/providers/chat_translation_provider.dart';
 import 'package:edge_translator/providers/service_providers.dart';
 import 'widget_test.dart';
@@ -116,11 +117,12 @@ void main() {
       expect(find.text('100% Offline'), findsNothing);
       expect(find.text('IKHO'), findsOneWidget);
 
-      // Direction pill & floating dock
+      // Direction pill & floating dock (single main mic + Japanese cat face)
       expect(find.text('English'), findsOneWidget);
       expect(find.text('Japanese'), findsWidgets);
       expect(find.text('Type'), findsOneWidget);
-      expect(find.byIcon(Icons.mic_rounded), findsNWidgets(2));
+      expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+      expect(find.byType(JapaneseCatFace), findsOneWidget);
     });
 
     testWidgets('typing English via Type dock translates into Hero card and shows actions', (WidgetTester tester) async {

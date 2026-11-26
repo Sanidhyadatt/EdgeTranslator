@@ -11,11 +11,13 @@ class AsrResult {
     required this.language,
   });
 
-  /// Maps the raw language code to the supported TranslationLanguage enum.
-  TranslationLanguage get translationLanguage =>
-      language.toLowerCase() == 'ja'
-          ? TranslationLanguage.japanese
-          : TranslationLanguage.english;
+  /// Maps the raw language code (including SenseVoice `<|ja|>` tags) to TranslationLanguage.
+  TranslationLanguage get translationLanguage {
+    final normalized = language.replaceAll(RegExp(r'[<|>]'), '').trim().toLowerCase();
+    return normalized == 'ja' || normalized.startsWith('ja-') || normalized.startsWith('ja_')
+        ? TranslationLanguage.japanese
+        : TranslationLanguage.english;
+  }
 
   bool get isEnglish => translationLanguage == TranslationLanguage.english;
   bool get isJapanese => translationLanguage == TranslationLanguage.japanese;

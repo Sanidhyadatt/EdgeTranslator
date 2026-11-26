@@ -1,44 +1,21 @@
-# Edge Translator ONNX Models
+# IKHO On-Device ONNX Models
 
-This directory stores the on-device AI models for 100% offline, low-latency execution.
+All offline AI models are packaged in the Android install-time AI pack module:
+`android/ai_models/src/main/assets/models/`
 
-## Automated Download
-All models can be downloaded and verified automatically by running:
-```bash
-python tool/download_models.py
-```
+They are intentionally excluded from Flutter `pubspec.yaml` `assets` so the base app module does not duplicate the ~857.5 MB model bundle.
 
-## Directory Structure
+## AI Pack Directory Structure
 
-1. **Multilingual ASR (Automatic Speech Recognition) & VAD**:
-   - `tiny-encoder.int8.onnx` (OpenAI Whisper-tiny quantized encoder)
-   - `tiny-decoder.int8.onnx` (OpenAI Whisper-tiny quantized decoder)
-   - `tiny-tokens.txt` (Multilingual Whisper vocabulary tokens)
-   - `silero_vad.onnx` (Silero Voice Activity Detector)
+1. **Multilingual ASR (Automatic Speech Recognition) & VAD (`sherpa_onnx`):**
+   - `asr/sense-voice.int8.onnx`
+   - `asr/sense-voice-tokens.txt`
+   - `silero_vad.onnx`
 
-2. **Bidirectional NMT (Neural Machine Translation - MarianMT)**:
-   - `nmt_en_ja/` (English -> Japanese):
-     - `encoder_model_quantized.onnx`
-     - `decoder_model_quantized.onnx`
-     - `source.spm`
-     - `target.spm`
-     - `vocab.json`
-     - `tokenizer_config.json`
-   - `nmt_ja_en/` (Japanese -> English):
-     - `encoder_model_quantized.onnx`
-     - `decoder_model_quantized.onnx`
-     - `source.spm`
-     - `target.spm`
-     - `vocab.json`
-     - `tokenizer_config.json`
+2. **Bidirectional NMT (`onnxruntime` MarianMT):**
+   - `nmt_en_ja/` (`encoder_model_quantized.onnx`, `decoder_model_quantized.onnx`, `source.spm`, `target.spm`, `vocab.json`, `tokenizer_config.json`)
+   - `nmt_ja_en/` (`encoder_model_quantized.onnx`, `decoder_model_quantized.onnx`, `source.spm`, `target.spm`, `vocab.json`, `tokenizer_config.json`)
 
-3. **TTS (Text-to-Speech - VITS)**:
-   - `tts_en/` (Piper English VITS):
-     - `en_US-lessac-medium.onnx`
-     - `tokens.txt`
-     - `lexicon.txt`
-   - `tts_ja/` (MeloTTS Japanese VITS):
-     - `model.onnx`
-     - `tokens.txt`
-     - `lexicon.txt`
-
+3. **TTS (Text-to-Speech):**
+   - `tts_en/` (`en_US-lessac-medium.onnx`, `tokens.txt`, `espeak-ng-data/`) — via `sherpa_onnx`
+   - `tts_ja/` (`model (1).onnx`, `tokens (2).txt`, `lexicon.txt`, `metadata.json`) — via `onnxruntime`

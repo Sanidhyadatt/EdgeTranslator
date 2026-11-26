@@ -93,7 +93,7 @@ class FakeAsrService implements AsrService {
   void resetVad() {}
 
   @override
-  Future<AsrResult> transcribe(Float32List samples) async => nextResult;
+  Future<AsrResult> transcribe(Float32List samples, {String? preferredLanguage}) async => nextResult;
 
   @override
   Future<void> dispose() async {}
@@ -408,7 +408,7 @@ void main() {
     expect(tester.widget<SwitchListTile>(find.byType(SwitchListTile)).value, false);
   });
 
-  test('JapaneseMeloG2p handles lexicon words, hiragana/katakana fallback, and punctuation', () {
+  test('JapaneseMeloG2p skips corrupted kana lemmas, repairs inflected verbs, and handles particles', () {
     final g2p = JapaneseMeloG2p.fromFiles(
       tokenLines: [
         '_ 0',
@@ -429,10 +429,19 @@ void main() {
         'N 15',
         'q 16',
         'r 17',
+        'm 18',
+        't 19',
+        'w 20',
+        'h 21',
+        'z 22',
       ],
       lexiconLines: [
+        'すみません s u m u m a s u z u 0 0 0 0 0 0 0 0 0 0',
+        'は h a 0 0',
+        'で d a 0 0',
         '渋谷 sh i b u y a 0 0 0 0 0 0',
         '駅 e k i 0 0 0',
+        '止まり t o m a r u 0 0 0 0 0 0',
       ],
     );
 
@@ -441,5 +450,21 @@ void main() {
     expect(encoded[0].first, 0);
     expect(encoded[0].last, 0);
     expect(encoded[1].length, greaterThan(5));
+
+    // Verify pure-kana corrupted lexicon entry (`すみません -> sumumasuzu`) is NOT used
+    expect(g2p.lexicon.containsKey('すみません'), isFalse);
+    expect(g2p.lexicon.containsKey('で'), isFalse);
+    // Verify `渋谷駅は` uses `w a` (id 20, 9), not `h a` (id 21, 9)
+    expect(encoded[0], containsAllInOrder([20, 0, 9, 0, 3, 0]));
+    // Verify lemmatized verb `止まり -> t o m a r u` was repaired to `t o m a r i`
+    expect(g2p.lexicon['止まり'], ['t', 'o', 'm', 'a', 'r', 'i']);
+    // Verify unseen conjugation `止まって` recovers Kanji stem `止 -> t o`
+    final tomare = g2p.encodeSentences('止まって');
+    expect(tomare.single, containsAllInOrder([19, 0, 12, 0, 18, 0, 9, 0, 16, 0, 19, 0, 10, 0]));
+  });
+
+  test('AsrResult normalizes SenseVoice tags and pipeline routes EN and JA voice transcripts accurately', () {
+    expect(const AsrResult(text: '駅はどこですか？', language: '<|ja|>').isJapanese, isTrue);
+    expect(const AsrResult(text: 'Where is the station?', language: '<|en|>').isEnglish, isTrue);
   });
 }

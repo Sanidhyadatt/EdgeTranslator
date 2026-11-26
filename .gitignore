@@ -56,3 +56,12 @@ app.*.map.json
 # Large ML model assets (exclude all except README.md)
 assets/models/*
 !assets/models/README.md
+android/ai_models/src/main/assets/models/
+
+# Android release signing secrets
+android/key.properties
+key.properties
+*.jks
+*.keystore
+*.p12
+*.pepk

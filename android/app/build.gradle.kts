@@ -1,11 +1,73 @@
+import org.gradle.api.GradleException
+import java.io.File
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     // The Flutter Gradle Plugin must be applied after the Android and Kotlin Gradle plugins.
     id("dev.flutter.flutter-gradle-plugin")
 }
 
+val requiredSigningKeys = listOf("storeFile", "storePassword", "keyAlias", "keyPassword")
+val keystorePropertiesFile: File = rootProject.file("key.properties")
+val keystoreProperties = Properties().apply {
+    if (keystorePropertiesFile.exists()) {
+        keystorePropertiesFile.inputStream().use { load(it) }
+    }
+}
+
+fun resolveKeystoreFile(configuredStore: String?): File? {
+    if (configuredStore.isNullOrBlank()) return null
+    val asConfigured = File(configuredStore)
+    if (asConfigured.isAbsolute) return asConfigured
+    val fromRoot = rootProject.file(configuredStore)
+    if (fromRoot.exists()) return fromRoot
+    val fromModule = file(configuredStore)
+    if (fromModule.exists()) return fromModule
+    return fromRoot
+}
+
+val missingSigningKeys = requiredSigningKeys.filter {
+    keystoreProperties.getProperty(it).isNullOrBlank()
+}
+val resolvedKeystoreFile = resolveKeystoreFile(keystoreProperties.getProperty("storeFile"))
+val hasValidReleaseSigning = keystorePropertiesFile.exists() &&
+    missingSigningKeys.isEmpty() &&
+    resolvedKeystoreFile != null &&
+    resolvedKeystoreFile.isFile
+
+fun validateReleaseSigningOrThrow() {
+    if (!keystorePropertiesFile.exists()) {
+        throw GradleException(
+            "RELEASE SIGNING ERROR: Missing ${keystorePropertiesFile.absolutePath}. " +
+                "Release builds require an external upload/release keystore configured in android/key.properties " +
+                "(storeFile, storePassword, keyAlias, keyPassword). Debug signing fallback is disabled for production."
+        )
+    }
+    if (missingSigningKeys.isNotEmpty()) {
+        throw GradleException(
+            "RELEASE SIGNING ERROR: Missing or blank properties in ${keystorePropertiesFile.absolutePath}: " +
+                "${missingSigningKeys.joinToString(", ")}."
+        )
+    }
+    if (resolvedKeystoreFile == null || !resolvedKeystoreFile.isFile) {
+        throw GradleException(
+            "RELEASE SIGNING ERROR: Keystore file not found at '${resolvedKeystoreFile?.absolutePath ?: ""}' " +
+                "(configured via storeFile in ${keystorePropertiesFile.absolutePath}). " +
+                "Keep the keystore outside the repository and verify storeFile."
+        )
+    }
+    val repoRoot = rootProject.projectDir.parentFile?.canonicalFile
+    if (repoRoot != null && resolvedKeystoreFile.canonicalPath.startsWith(repoRoot.path + File.separator)) {
+        logger.warn(
+            "WARNING: Release keystore (${resolvedKeystoreFile.canonicalPath}) is inside the project directory. " +
+                "Move it outside the repository; ensure it is never committed."
+        )
+    }
+}
+
 android {
-    namespace = "com.example.edge_translator"
+    namespace = "com.ikho.mistyforgelabs"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
 
@@ -15,8 +77,7 @@ android {
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
-        applicationId = "com.example.edge_translator"
+        applicationId = "com.ikho.mistyforgelabs"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
@@ -25,11 +86,24 @@ android {
         versionName = flutter.versionName
     }
 
+    signingConfigs {
+        if (hasValidReleaseSigning) {
+            create("release") {
+                storeFile = resolvedKeystoreFile
+                storePassword = keystoreProperties.getProperty("storePassword")
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.findByName("release")
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
@@ -39,6 +113,8 @@ android {
             pickFirsts += "**/libc++_shared.so"
         }
     }
+
+    assetPacks += ":ai_models"
 }
 
 kotlin {
@@ -49,4 +125,16 @@ kotlin {
 
 flutter {
     source = "../.."
+}
+
+gradle.taskGraph.whenReady {
+    val runningReleaseTask = allTasks.any { task ->
+        task.project == project &&
+            task.name.contains("Release") &&
+            !task.name.contains("UnitTest") &&
+            !task.name.contains("AndroidTest")
+    }
+    if (runningReleaseTask) {
+        validateReleaseSigningOrThrow()
+    }
 }

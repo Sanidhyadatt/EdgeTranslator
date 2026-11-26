@@ -28,6 +28,11 @@ class SherpaTtsServiceImpl implements TtsService {
   bool _isEnNativeActive = false;
   bool _isJaNativeActive = false;
   bool _initialized = false;
+  bool _disposed = false;
+  Future<void>? _initFuture;
+  String? _lastInitError;
+
+  String? get lastInitError => _lastInitError;
 
   bool isAvailableFor(String language) {
     final isJa = language.toLowerCase().startsWith('ja');
@@ -43,12 +48,22 @@ class SherpaTtsServiceImpl implements TtsService {
   }) : _modelLoader = modelLoader ?? const ModelLoader();
 
   @override
-  Future<void> initialize() async {
-    if (_initialized) return;
-    if (kIsWeb) {
-      _initialized = true;
-      return;
+  Future<void> initialize() {
+    if (_initialized && !_disposed && (_isEnNativeActive || _isJaNativeActive)) {
+      return Future.value();
     }
+    _disposed = false;
+    return _initFuture ??= _doInitialize().whenComplete(() {
+      if (!_disposed && (_isEnNativeActive || _isJaNativeActive)) {
+        _initialized = true;
+      }
+      _initFuture = null;
+    });
+  }
+
+  Future<void> _doInitialize() async {
+    if (kIsWeb) return;
+    _lastInitError = null;
 
     try {
       try {
@@ -58,20 +73,20 @@ class SherpaTtsServiceImpl implements TtsService {
       }
 
       // Extract model assets if needed
-      try {
+      if (modelPath == null) {
         await _modelLoader.extractTtsModels();
-      } catch (e) {
-        AppLogger.warning('SherpaTtsService', 'TTS asset extraction notice: $e');
       }
+      if (_disposed) return;
 
       final ttsPaths = await _modelLoader.getTtsModelPaths();
+      if (_disposed) return;
 
       // Resolve English TTS files
       final enModelFile = File(ttsPaths.en.modelPath);
       final enTokensFile = File(ttsPaths.en.tokensPath);
       final enLexiconPath = ttsPaths.en.lexiconPath ?? p.join(enModelFile.parent.path, 'lexicon.txt');
       final enLexiconFile = File(enLexiconPath);
-      final enDataDir = ttsPaths.en.dataDir ?? '';
+      final enDataDir = dataDir ?? ttsPaths.en.dataDir ?? '';
       final hasEnLexicon = enLexiconFile.existsSync();
       final hasEnDataDir = enDataDir.isNotEmpty && Directory(enDataDir).existsSync();
 
@@ -115,7 +130,12 @@ class SherpaTtsServiceImpl implements TtsService {
                 provider: 'cpu',
               ),
             );
-            _enTts = sherpa.OfflineTts(enConfig);
+            final enTts = sherpa.OfflineTts(enConfig);
+            if (_disposed) {
+              enTts.free();
+              return;
+            }
+            _enTts = enTts;
             _isEnNativeActive = true;
             print('[FFI DEBUG][TTS] Successfully initialized native English OfflineTts.');
             AppLogger.info('SherpaTtsService', 'Initialized English (Piper VITS) TTS from: ${enModelFile.path}');
@@ -134,6 +154,7 @@ class SherpaTtsServiceImpl implements TtsService {
       // Using OrtSession directly avoids a sherpa-onnx C++ frontend bug where
       // language=Japanese with jieba=0 skips MeloTtsLexicon and crashes on tone IDs.
       if (jaModelFile.existsSync() && jaTokensFile.existsSync()) {
+        OrtSessionOptions? opts;
         try {
           try {
             OrtEnv.instance.init();
@@ -142,21 +163,31 @@ class SherpaTtsServiceImpl implements TtsService {
           final tokenLines = await jaTokensFile.readAsLines();
           final jaLexFile = File(jaLexiconPath);
           final lexiconLines = jaLexFile.existsSync() ? await jaLexFile.readAsLines() : <String>[];
+          if (_disposed) return;
+
           _jaG2p = JapaneseMeloG2p.fromFiles(
             tokenLines: tokenLines,
             lexiconLines: lexiconLines,
           );
 
-          final opts = OrtSessionOptions();
+          opts = OrtSessionOptions();
+          final OrtSession session;
           if (Platform.isWindows) {
-            _jaSession = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
+            session = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
           } else {
+            OrtSession created;
             try {
-              _jaSession = OrtSession.fromFile(jaModelFile, opts);
+              created = OrtSession.fromFile(jaModelFile, opts);
             } catch (_) {
-              _jaSession = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
+              created = OrtSession.fromBuffer(await jaModelFile.readAsBytes(), opts);
             }
+            session = created;
           }
+          if (_disposed) {
+            session.release();
+            return;
+          }
+          _jaSession = session;
           _isJaNativeActive = true;
           AppLogger.info(
             'SherpaTtsService',
@@ -167,15 +198,16 @@ class SherpaTtsServiceImpl implements TtsService {
           _jaSession = null;
           _jaG2p = null;
           AppLogger.error('SherpaTtsService', 'Failed initializing Japanese TTS engine', e, st);
+        } finally {
+          opts?.release();
         }
       } else {
         AppLogger.warning('SherpaTtsService', 'Japanese TTS weights missing: ${jaModelFile.path}');
       }
     } catch (e, st) {
+      _lastInitError = e.toString();
       AppLogger.error('SherpaTtsService', 'Initialization error in Sherpa TTS', e, st);
     }
-
-    _initialized = true;
   }
 
   @override
@@ -184,10 +216,11 @@ class SherpaTtsServiceImpl implements TtsService {
     String language = 'ja',
     double speed = 1.0,
   }) async {
-    if (kIsWeb) return '';
+    if (kIsWeb || _disposed) return '';
     if (!_initialized) {
       await initialize();
     }
+    if (_disposed) return '';
 
     final cleanText = text.trim();
     if (cleanText.isEmpty) return '';
@@ -239,9 +272,15 @@ class SherpaTtsServiceImpl implements TtsService {
     if (sentences.isEmpty) return Float32List(0);
 
     const sampleRate = 44100;
-    const padSamples = (sampleRate * 0.08) ~/ 1;
+    const padSamples = (sampleRate * 0.12) ~/ 1;
     const pauseSamples = (sampleRate * 0.18) ~/ 1;
+    const japaneseToneId = 6; // Matches `tone_start: 6` in MeloTTS metadata.json
     final lengthScale = speed > 0 ? 1.0 / speed : 1.0;
+
+    final punctIds = <int>{
+      for (final ch in const [',', '.', '!', '?', '-'])
+        ?g2p.tokenToId[ch],
+    };
 
     final allChunks = <Float32List>[
       Float32List(padSamples),
@@ -251,7 +290,10 @@ class SherpaTtsServiceImpl implements TtsService {
     try {
       for (var sIdx = 0; sIdx < sentences.length; sIdx++) {
         final x = sentences[sIdx];
-        final tones = List<int>.filled(x.length, 0);
+        final tones = <int>[
+          for (final id in x)
+            (id == g2p.blankId || punctIds.contains(id)) ? 0 : japaneseToneId,
+        ];
         final xT = OrtValueTensor.createTensorWithDataList(x, [1, x.length]);
         final lenT = OrtValueTensor.createTensorWithDataList(Int64List.fromList([x.length]), [1]);
         final tonesT = OrtValueTensor.createTensorWithDataList(tones, [1, x.length]);
@@ -384,6 +426,8 @@ class SherpaTtsServiceImpl implements TtsService {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
+    _initFuture = null;
     try {
       _enTts?.free();
       _jaSession?.release();

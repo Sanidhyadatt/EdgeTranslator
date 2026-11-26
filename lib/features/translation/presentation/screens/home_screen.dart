@@ -179,7 +179,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             explicitSourceLang: sourceLang,
           );
         },
-        onStartMic: _startMicForLanguage,
+        onStartMic: () => _startMicForLanguage(pipelineState.activeLanguage),
         onPlayTranslation: (id) => pipelineNotifier.playMessageAudio(id),
         onPlayOriginal: (id) =>
             pipelineNotifier.playMessageAudio(id, speakOriginal: true),

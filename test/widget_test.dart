@@ -9,6 +9,7 @@ import 'package:edge_translator/core/services/audio_service.dart';
 import 'package:edge_translator/core/utils/language_detector.dart';
 import 'package:edge_translator/features/translation/data/datasources/sherpa_asr_service_impl.dart';
 import 'package:edge_translator/features/translation/domain/models/chat_message.dart';
+import 'package:edge_translator/features/translation/presentation/widgets/japanese_cat_face.dart';
 import 'package:edge_translator/providers/service_providers.dart';
 import 'package:edge_translator/providers/translation_pipeline_provider.dart';
 
@@ -106,9 +107,10 @@ void main() {
     expect(find.text('English'), findsOneWidget);
     expect(find.text('Japanese'), findsWidgets);
 
-    // Floating dock (Type + Mic FAB + quick opposite mic)
+    // Floating dock (Type + single central Mic FAB + Japanese cat face mascot)
     expect(find.text('Type'), findsOneWidget);
-    expect(find.byIcon(Icons.mic_rounded), findsNWidgets(2));
+    expect(find.byIcon(Icons.mic_rounded), findsOneWidget);
+    expect(find.byType(JapaneseCatFace), findsOneWidget);
 
     // Three localized bottom navigation tabs
     expect(find.text('Translate'), findsOneWidget);

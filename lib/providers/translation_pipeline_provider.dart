@@ -4,6 +4,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/utils/app_logger.dart';
 import '../core/utils/language_detector.dart';
+import '../features/translation/data/datasources/model_loader.dart';
 import '../features/translation/domain/models/chat_message.dart';
 import 'service_providers.dart';
 import 'settings_provider.dart';
@@ -67,6 +68,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   Timer? _recordingTimer;
   bool _isProcessingSegment = false;
   bool _isFinishingVoiceSpeech = false;
+  bool _isStartingVoiceListening = false;
   int _playbackRunId = 0;
 
   @override
@@ -76,11 +78,18 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       _recordingTimer?.cancel();
     });
 
-    // Pre-initialize offline models and unbundle assets on startup
+    // Pre-initialize offline models and extract AI pack assets on startup
     Future.microtask(() async {
       try {
         await ref.read(translationRepositoryProvider).initializeModels();
+      } on ModelExtractionException catch (e) {
+        if (!ref.mounted) return;
+        AppLogger.error('Pipeline', 'Offline AI pack preparation failed', e);
+        state = state.copyWith(
+          errorMessage: 'Offline AI models unavailable: ${e.message}',
+        );
       } catch (e) {
+        if (!ref.mounted) return;
         AppLogger.error('Pipeline', 'Background model pre-initialization notice', e);
       }
     });
@@ -244,24 +253,30 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
   }
 
   Future<void> _startOfflineRecorderListening() async {
+    if (_isStartingVoiceListening) return;
+    _isStartingVoiceListening = true;
     try {
       if (state.isContinuousListening) {
         await stopContinuousListening(processPending: false);
       }
+      if (!ref.mounted) return;
       final audioService = ref.read(audioServiceProvider);
       final permitted = await audioService.hasPermission();
+      if (!ref.mounted) return;
       if (!permitted) {
         state = state.copyWith(
           status: PipelineStatus.error,
           recordingSeconds: 0,
-          errorMessage: 'Microphone permission not granted.',
+          errorMessage: 'Microphone permission not granted. Enable Microphone access in Android Settings.',
         );
         return;
       }
 
       final asrService = ref.read(asrServiceProvider);
       await asrService.initialize();
+      if (!ref.mounted) return;
       await audioService.startRecording();
+      if (!ref.mounted) return;
 
       state = state.copyWith(
         status: PipelineStatus.recording,
@@ -274,11 +289,15 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     } catch (e, st) {
       _stopRecordingTimer();
       AppLogger.error('Pipeline', 'Failed to start microphone recording', e, st);
-      state = state.copyWith(
-        status: PipelineStatus.error,
-        recordingSeconds: 0,
-        errorMessage: 'Could not start microphone: $e',
-      );
+      if (ref.mounted) {
+        state = state.copyWith(
+          status: PipelineStatus.error,
+          recordingSeconds: 0,
+          errorMessage: 'Could not start microphone: $e',
+        );
+      }
+    } finally {
+      _isStartingVoiceListening = false;
     }
   }
 
@@ -481,10 +500,15 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     );
 
     try {
-      // 1. Transcribe speech via Multilingual Whisper ASR
+      // 1. Transcribe speech via offline multilingual ASR with active language hint
       state = state.copyWith(status: PipelineStatus.transcribing, clearError: true);
       final asrService = ref.read(asrServiceProvider);
-      final asrResult = await asrService.transcribe(speechSamples);
+      final hintLang = forcedLanguage ?? state.activeLanguage;
+      final asrResult = await asrService.transcribe(
+        speechSamples,
+        preferredLanguage: hintLang == TranslationLanguage.japanese ? 'ja' : 'en',
+      );
+      if (!ref.mounted) return;
 
       final validTranscript = asrResult.text.trim();
       if (validTranscript.isEmpty) {
@@ -500,10 +524,19 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       // Always resolve source language from the actual recognized script/language
       // so English speech translates to Japanese and Japanese speech translates to English.
       final detectedFromScript = detectLanguage(validTranscript);
-      final sourceLang = forcedLanguage ??
-          (detectedFromScript == TranslationLanguage.japanese || asrResult.isJapanese
-              ? TranslationLanguage.japanese
-              : TranslationLanguage.english);
+      final hasLatinLetters = RegExp(r'[A-Za-z]').hasMatch(validTranscript);
+      final TranslationLanguage sourceLang;
+      if (forcedLanguage != null) {
+        sourceLang = forcedLanguage;
+      } else if (detectedFromScript == TranslationLanguage.japanese) {
+        sourceLang = TranslationLanguage.japanese;
+      } else if (hasLatinLetters) {
+        sourceLang = TranslationLanguage.english;
+      } else {
+        sourceLang = asrResult.isJapanese
+            ? TranslationLanguage.japanese
+            : TranslationLanguage.english;
+      }
       final targetLang = sourceLang.opposite;
       final isEnglish = sourceLang == TranslationLanguage.english;
       final messageId = DateTime.now().millisecondsSinceEpoch.toString();
@@ -538,6 +571,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         sourceLang: isEnglish ? 'en' : 'ja',
         targetLang: isEnglish ? 'ja' : 'en',
       );
+      if (!ref.mounted) return;
 
       // Update message with actual translated text in chat log immediately
       final updatedMessages = state.messages.map((m) {
@@ -556,15 +590,18 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       AppLogger.info('Pipeline', 'Speech transcribed and translated into chat history.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Error during speech processing', e, st);
-      state = state.copyWith(
-        status: PipelineStatus.error,
-        clearInterim: true,
-        errorMessage: 'Speech processing error: $e',
-      );
+      if (ref.mounted) {
+        state = state.copyWith(
+          status: PipelineStatus.error,
+          clearInterim: true,
+          errorMessage: 'Speech processing error: $e',
+        );
+      }
     } finally {
       _isProcessingSegment = false;
-      final asrService = ref.read(asrServiceProvider);
-      asrService.resetVad();
+      if (ref.mounted) {
+        ref.read(asrServiceProvider).resetVad();
+      }
     }
   }
 
@@ -616,6 +653,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         sourceLang: isEnglish ? 'en' : 'ja',
         targetLang: isEnglish ? 'ja' : 'en',
       );
+      if (!ref.mounted) return;
 
       final updatedMessages = state.messages.map((m) {
         if (m.id == messageId) {
@@ -633,6 +671,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
       AppLogger.info('Pipeline', 'Text translation complete.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Manual text translation error', e, st);
+      if (!ref.mounted) return;
       final failedMessages = state.messages.map((m) {
         if (m.id == messageId) {
           return m.copyWith(translatedText: '[Translation failed: $e]');
@@ -696,7 +735,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     } catch (e) {
       AppLogger.warning('Pipeline', 'Audio playback notice: $e');
     } finally {
-      if (runId == _playbackRunId) {
+      if (ref.mounted && runId == _playbackRunId) {
         final resetMessages = state.messages.map((m) {
           return m.copyWith(isPlaying: false);
         }).toList();
@@ -741,7 +780,7 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     } catch (e) {
       AppLogger.warning('Pipeline', 'Preview playback notice: $e');
     } finally {
-      if (runId == _playbackRunId) {
+      if (ref.mounted && runId == _playbackRunId) {
         state = state.copyWith(
           status: PipelineStatus.idle,
           clearPlaying: true,

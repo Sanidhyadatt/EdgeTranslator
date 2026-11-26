@@ -29,6 +29,7 @@ class AudioServiceImpl implements AudioService {
   final StreamController<Float32List> _streamController = StreamController<Float32List>.broadcast();
   StreamSubscription<Uint8List>? _recordSub;
 
+  int? _streamPendingByte;
   bool _recording = false;
   bool _streaming = false;
 
@@ -48,6 +49,63 @@ class AudioServiceImpl implements AudioService {
     return _recorder.hasPermission();
   }
 
+  /// Opens a 16kHz mono PCM stream with hardware AGC, noise suppression,
+  /// and Android's voice-recognition mic path, falling back if unsupported.
+  Future<Stream<Uint8List>> _openSpeechPcmStream() async {
+    const enhancedConfig = RecordConfig(
+      encoder: AudioEncoder.pcm16bits,
+      sampleRate: AppConstants.audioSampleRate,
+      numChannels: AppConstants.audioChannels,
+      autoGain: true,
+      echoCancel: true,
+      noiseSuppress: true,
+      androidConfig: AndroidRecordConfig(
+        audioSource: AndroidAudioSource.voiceRecognition,
+      ),
+    );
+    try {
+      return await _recorder.startStream(enhancedConfig);
+    } catch (e) {
+      AppLogger.warning(
+        'AudioService',
+        'Enhanced speech RecordConfig unavailable ($e); retrying standard 16kHz PCM.',
+      );
+      const fallbackConfig = RecordConfig(
+        encoder: AudioEncoder.pcm16bits,
+        sampleRate: AppConstants.audioSampleRate,
+        numChannels: AppConstants.audioChannels,
+      );
+      return await _recorder.startStream(fallbackConfig);
+    }
+  }
+
+  Float32List _decodePcm16ToFloat32(Uint8List bytes, {bool carryOddByte = false}) {
+    Uint8List aligned = bytes;
+    if (carryOddByte && _streamPendingByte != null) {
+      aligned = Uint8List(bytes.length + 1);
+      aligned[0] = _streamPendingByte!;
+      aligned.setAll(1, bytes);
+      _streamPendingByte = null;
+    }
+
+    var usableLen = aligned.lengthInBytes;
+    if (usableLen.isOdd) {
+      if (carryOddByte) {
+        _streamPendingByte = aligned[usableLen - 1];
+      }
+      usableLen -= 1;
+    }
+    if (usableLen < 2) return Float32List(0);
+
+    final byteData = ByteData.sublistView(aligned, 0, usableLen);
+    final sampleCount = usableLen ~/ 2;
+    final floatSamples = Float32List(sampleCount);
+    for (int i = 0; i < sampleCount; i++) {
+      floatSamples[i] = byteData.getInt16(i * 2, Endian.little) / 32768.0;
+    }
+    return floatSamples;
+  }
+
   @override
   Future<void> startContinuousStream() async {
     if (_streaming) return;
@@ -57,30 +115,19 @@ class AudioServiceImpl implements AudioService {
       throw StateError('Microphone permission not granted.');
     }
 
-    const config = RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      sampleRate: AppConstants.audioSampleRate,
-      numChannels: AppConstants.audioChannels,
-    );
+    _streamPendingByte = null;
+    await _recordSub?.cancel();
 
     try {
-      final rawStream = await _recorder.startStream(config);
+      final rawStream = await _openSpeechPcmStream();
       _streaming = true;
-      AppLogger.info('AudioService', 'Continuous 16kHz PCM audio stream started.');
+      AppLogger.info('AudioService', 'Continuous 16kHz speech-enhanced PCM stream started.');
 
       _recordSub = rawStream.listen(
         (chunk) {
           if (chunk.isEmpty) return;
-          final byteData = ByteData.sublistView(chunk);
-          final sampleCount = chunk.lengthInBytes ~/ 2;
-          final floatSamples = Float32List(sampleCount);
-
-          for (int i = 0; i < sampleCount; i++) {
-            final int16Sample = byteData.getInt16(i * 2, Endian.little);
-            floatSamples[i] = int16Sample / 32768.0;
-          }
-
-          if (!_streamController.isClosed) {
+          final floatSamples = _decodePcm16ToFloat32(chunk, carryOddByte: true);
+          if (floatSamples.isNotEmpty && !_streamController.isClosed) {
             _streamController.add(floatSamples);
           }
         },
@@ -100,6 +147,7 @@ class AudioServiceImpl implements AudioService {
   Future<void> stopContinuousStream() async {
     if (!_streaming) return;
     _streaming = false;
+    _streamPendingByte = null;
     await _recordSub?.cancel();
     _recordSub = null;
 
@@ -121,21 +169,18 @@ class AudioServiceImpl implements AudioService {
     }
 
     _pcmBuffer.clear();
-
-    const config = RecordConfig(
-      encoder: AudioEncoder.pcm16bits,
-      sampleRate: AppConstants.audioSampleRate,
-      numChannels: AppConstants.audioChannels,
-    );
+    await _recordSub?.cancel();
 
     try {
-      final audioStream = await _recorder.startStream(config);
+      final audioStream = await _openSpeechPcmStream();
       _recording = true;
-      AppLogger.info('AudioService', 'Audio stream started (16000Hz, mono, PCM16).');
+      AppLogger.info('AudioService', 'Audio stream started (16000Hz, mono, PCM16, voice-enhanced).');
 
       _recordSub = audioStream.listen(
         (chunk) {
-          _pcmBuffer.addAll(chunk);
+          if (chunk.isNotEmpty) {
+            _pcmBuffer.addAll(chunk);
+          }
         },
         onError: (err, st) {
           AppLogger.error('AudioService', 'Error in audio stream', err, st);
@@ -168,15 +213,7 @@ class AudioServiceImpl implements AudioService {
     final totalBytes = _pcmBuffer.length;
     AppLogger.info('AudioService', 'Captured $totalBytes bytes of PCM audio.');
 
-    final byteData = ByteData.sublistView(Uint8List.fromList(_pcmBuffer));
-    final sampleCount = totalBytes ~/ 2;
-    final floatSamples = Float32List(sampleCount);
-
-    for (int i = 0; i < sampleCount; i++) {
-      final int16Sample = byteData.getInt16(i * 2, Endian.little);
-      floatSamples[i] = int16Sample / 32768.0;
-    }
-
+    final floatSamples = _decodePcm16ToFloat32(Uint8List.fromList(_pcmBuffer));
     _pcmBuffer.clear();
     return floatSamples;
   }
@@ -184,6 +221,7 @@ class AudioServiceImpl implements AudioService {
   @override
   Future<void> cancelRecording() async {
     _recording = false;
+    _streamPendingByte = null;
     await _recordSub?.cancel();
     _recordSub = null;
     _pcmBuffer.clear();

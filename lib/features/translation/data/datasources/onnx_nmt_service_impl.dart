@@ -34,11 +34,11 @@ class _DirectionEngine {
   }
 }
 
-/// 100% on-device Neural Machine Translation using the MarianMT ONNX models that
-/// ship inside the app bundle (`assets/models/nmt_en_ja` and `nmt_ja_en`).
+/// 100% on-device Neural Machine Translation using the MarianMT ONNX models delivered
+/// via the Android install-time AI pack (`:ai_models`).
 ///
 /// No network access and no model download is ever required: the encoder/decoder
-/// weights, SentencePiece tokenizers and vocabularies are pre-installed assets.
+/// weights, SentencePiece tokenizers and vocabularies are pre-installed offline assets.
 class OnnxNmtServiceImpl implements NmtService {
   final ModelLoader _modelLoader;
   final String? enJaEncoderPath;
@@ -47,13 +47,16 @@ class OnnxNmtServiceImpl implements NmtService {
   final String? jaEnDecoderPath;
 
   bool _initialized = false;
+  bool _disposed = false;
   Future<void>? _initFuture;
+  String? _lastInitError;
 
   _DirectionEngine? _enJa;
   _DirectionEngine? _jaEn;
 
   /// True once at least one direction has real ONNX weights loaded.
-  bool get isReady => _enJa != null || _jaEn != null;
+  bool get isReady => !_disposed && (_enJa != null || _jaEn != null);
+  String? get lastInitError => _lastInitError;
 
   OnnxNmtServiceImpl({
     ModelLoader? modelLoader,
@@ -65,24 +68,28 @@ class OnnxNmtServiceImpl implements NmtService {
 
   @override
   Future<void> initialize() {
-    if (_initialized) return Future.value();
+    if (_initialized && !_disposed && isReady) return Future.value();
+    _disposed = false;
     return _initFuture ??= _doInitialize().whenComplete(() {
-      _initialized = true;
+      if (!_disposed && isReady) {
+        _initialized = true;
+      }
       _initFuture = null;
     });
   }
 
   Future<void> _doInitialize() async {
     AppLogger.info('OnnxNmtService', 'Initializing offline MarianMT ONNX translation engines...');
+    _lastInitError = null;
 
     try {
-      try {
+      if (enJaEncoderPath == null || jaEnEncoderPath == null) {
         await _modelLoader.extractModelAssets();
-      } catch (e) {
-        AppLogger.error('OnnxNmtService', 'Asset extraction notice: $e');
       }
+      if (_disposed) return;
 
       final nmtPaths = await _modelLoader.getNmtModelPaths();
+      if (_disposed) return;
 
       try {
         OrtEnv.instance.init();
@@ -90,21 +97,36 @@ class OnnxNmtServiceImpl implements NmtService {
         // OrtEnv might already be initialized by another subsystem
       }
 
-      _enJa = await _loadDirection(
+      final loadedEnJa = await _loadDirection(
         label: 'EN->JA',
         encoderPath: enJaEncoderPath ?? nmtPaths.enJa.encoderPath,
         decoderPath: enJaDecoderPath ?? nmtPaths.enJa.decoderPath,
         vocabPath: nmtPaths.enJa.vocabJsonPath,
         sourceSpmPath: nmtPaths.enJa.sourceSpmPath,
       );
-      _jaEn = await _loadDirection(
+      if (_disposed) {
+        loadedEnJa?.release();
+        return;
+      }
+      _enJa = loadedEnJa;
+
+      final loadedJaEn = await _loadDirection(
         label: 'JA->EN',
         encoderPath: jaEnEncoderPath ?? nmtPaths.jaEn.encoderPath,
         decoderPath: jaEnDecoderPath ?? nmtPaths.jaEn.decoderPath,
         vocabPath: nmtPaths.jaEn.vocabJsonPath,
         sourceSpmPath: nmtPaths.jaEn.sourceSpmPath,
       );
+      if (_disposed) {
+        loadedJaEn?.release();
+        return;
+      }
+      _jaEn = loadedJaEn;
+      if (_enJa == null && _jaEn == null) {
+        _lastInitError = 'No ONNX NMT translation weights could be loaded.';
+      }
     } catch (e, st) {
+      _lastInitError = e.toString();
       AppLogger.error('OnnxNmtService', 'Initialization error in MarianMT ONNX translation engine', e, st);
     }
   }
@@ -130,30 +152,40 @@ class OnnxNmtServiceImpl implements NmtService {
       return null;
     }
 
+    OrtSessionOptions? options;
+    OrtSession? encoder;
+    OrtSession? decoder;
     try {
       final map = jsonDecode(await vocabFile.readAsString()) as Map<String, dynamic>;
       final vocab = map.map((k, v) => MapEntry(k, (v as num).toInt()));
       final reverse = <int, String>{for (final e in vocab.entries) e.value: e.key};
       final spm = SentencePieceModel.parse(await spmFile.readAsBytes());
 
-      final options = OrtSessionOptions();
-      final encoder = await _createSession(encFile, options);
-      final decoder = await _createSession(decFile, options);
+      options = OrtSessionOptions();
+      encoder = await _createSession(encFile, options);
+      decoder = await _createSession(decFile, options);
 
       AppLogger.info(
         'OnnxNmtService',
         '$label ready: ${vocab.length} vocab tokens, ${spm.vocabSize} SentencePiece pieces.',
       );
-      return _DirectionEngine(
+      final result = _DirectionEngine(
         encoder: encoder,
         decoder: decoder,
         vocab: vocab,
         reverseVocab: reverse,
         sourceSpm: spm,
       );
+      encoder = null;
+      decoder = null;
+      return result;
     } catch (e, st) {
+      encoder?.release();
+      decoder?.release();
       AppLogger.error('OnnxNmtService', 'Could not initialize $label ONNX engine', e, st);
       return null;
+    } finally {
+      options?.release();
     }
   }
 
@@ -375,6 +407,8 @@ class OnnxNmtServiceImpl implements NmtService {
 
   @override
   Future<void> dispose() async {
+    _disposed = true;
+    _initFuture = null;
     _enJa?.release();
     _jaEn?.release();
     _enJa = null;

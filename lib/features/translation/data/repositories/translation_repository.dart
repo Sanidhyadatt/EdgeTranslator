@@ -11,7 +11,11 @@ class TranslationRepository {
   final ModelLoader modelLoader;
 
   bool _isInitialized = false;
+  Future<void>? _initFuture;
+  String? _lastInitError;
+
   bool get isInitialized => _isInitialized;
+  String? get lastInitError => _lastInitError;
 
   TranslationRepository({
     required this.asrService,
@@ -20,17 +24,31 @@ class TranslationRepository {
     required this.modelLoader,
   });
 
-  /// Prepares model files from Flutter assets to local device cache and initializes engines.
+  /// Prepares model files from the AI pack into local storage and initializes engines.
   Future<void> initializeModels() async {
     if (_isInitialized) return;
-    await modelLoader.ensureModelsExtracted();
-    await asrService.initialize();
-    await nmtService.initialize();
-    await ttsService.initialize();
-    _isInitialized = true;
+    return _initFuture ??= _doInitializeModels().whenComplete(() {
+      _initFuture = null;
+    });
+  }
+
+  Future<void> _doInitializeModels() async {
+    try {
+      _lastInitError = null;
+      await modelLoader.ensureModelsExtracted();
+      await asrService.initialize();
+      await nmtService.initialize();
+      await ttsService.initialize();
+      _isInitialized = true;
+    } catch (e) {
+      _isInitialized = false;
+      _lastInitError = e.toString();
+      rethrow;
+    }
   }
 
   Future<void> dispose() async {
+    _initFuture = null;
     await asrService.dispose();
     await nmtService.dispose();
     await ttsService.dispose();

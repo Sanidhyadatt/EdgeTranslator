@@ -7,7 +7,10 @@ abstract class AsrService {
   Future<void> initialize();
 
   /// Transcribes raw normalized Float32 audio samples into text with detected language code.
-  Future<AsrResult> transcribe(Float32List samples);
+  ///
+  /// [preferredLanguage] (`'en'` or `'ja'`) hints the expected spoken language when
+  /// multilingual detection is ambiguous or noisy.
+  Future<AsrResult> transcribe(Float32List samples, {String? preferredLanguage});
 
   /// Pushes a streaming audio chunk into the VAD engine for endpointing.
   void acceptVadWaveform(Float32List samples);
