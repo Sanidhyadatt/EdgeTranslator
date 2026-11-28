@@ -65,7 +65,22 @@ class _PureRecordingViewState extends State<PureRecordingView>
     _animController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 1200),
-    )..repeat();
+    );
+    if (!widget.status.isProcessing) {
+      _animController.repeat();
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant PureRecordingView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final wasProcessing = oldWidget.status.isProcessing;
+    final isProcessing = widget.status.isProcessing;
+    if (isProcessing && !wasProcessing) {
+      _animController.stop();
+    } else if (!isProcessing && wasProcessing) {
+      _animController.repeat();
+    }
   }
 
   @override
@@ -195,42 +210,44 @@ class _PureRecordingViewState extends State<PureRecordingView>
               Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  SizedBox(
-                    height: 36,
-                    child: AnimatedBuilder(
-                      animation: _animController,
-                      builder: (context, _) {
-                        return Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            for (var i = 0; i < _baseHeights.length; i++) ...[
-                              Container(
-                                width: _isAccentBar[i] || i == 4 ? 3 : 2.2,
-                                height: isProcessing
-                                    ? _baseHeights[i] * 0.45
-                                    : (_baseHeights[i] *
-                                            (0.55 +
-                                                0.45 *
-                                                    math.sin(
-                                                        (_animController.value *
-                                                                2 *
-                                                                math.pi) +
-                                                            i * 0.75)))
-                                        .clamp(6.0, 34.0),
-                                decoration: BoxDecoration(
-                                  color: (_isAccentBar[i]
-                                          ? AppTheme.cinnabarDeep
-                                          : AppTheme.sumi)
-                                      .withValues(alpha: _barOpacity[i]),
-                                  borderRadius: BorderRadius.circular(999),
+                  RepaintBoundary(
+                    child: SizedBox(
+                      height: 36,
+                      child: AnimatedBuilder(
+                        animation: _animController,
+                        builder: (context, _) {
+                          return Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              for (var i = 0; i < _baseHeights.length; i++) ...[
+                                Container(
+                                  width: _isAccentBar[i] || i == 4 ? 3 : 2.2,
+                                  height: isProcessing
+                                      ? _baseHeights[i] * 0.45
+                                      : (_baseHeights[i] *
+                                              (0.55 +
+                                                  0.45 *
+                                                      math.sin(
+                                                          (_animController.value *
+                                                                  2 *
+                                                                  math.pi) +
+                                                              i * 0.75)))
+                                          .clamp(6.0, 34.0),
+                                  decoration: BoxDecoration(
+                                    color: (_isAccentBar[i]
+                                            ? AppTheme.cinnabarDeep
+                                            : AppTheme.sumi)
+                                        .withValues(alpha: _barOpacity[i]),
+                                    borderRadius: BorderRadius.circular(999),
+                                  ),
                                 ),
-                              ),
-                              if (i < _baseHeights.length - 1)
-                                const SizedBox(width: 6),
+                                if (i < _baseHeights.length - 1)
+                                  const SizedBox(width: 6),
+                              ],
                             ],
-                          ],
-                        );
-                      },
+                          );
+                        },
+                      ),
                     ),
                   ),
                   const SizedBox(height: 8),

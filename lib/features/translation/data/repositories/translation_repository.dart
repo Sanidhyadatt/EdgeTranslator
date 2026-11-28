@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import '../../../../core/utils/device_profile.dart';
 import '../datasources/model_loader.dart';
 import '../../domain/services/asr_service.dart';
 import '../../domain/services/nmt_service.dart';
@@ -36,9 +39,16 @@ class TranslationRepository {
     try {
       _lastInitError = null;
       await modelLoader.ensureModelsExtracted();
-      await asrService.initialize();
-      await nmtService.initialize();
-      await ttsService.initialize();
+      // Initialize ASR and NMT concurrently so cold start isn't serialized.
+      await Future.wait([
+        asrService.initialize(),
+        nmtService.initialize(),
+      ]);
+      // Defer heavy TTS model loading (~235 MB) on mobile / low-end devices until
+      // the user taps Speak (TtsPlayerService calls initializeForLanguage on demand).
+      if (!(DeviceProfile.isLowEnd || Platform.isAndroid || Platform.isIOS)) {
+        await ttsService.initialize();
+      }
       _isInitialized = true;
     } catch (e) {
       _isInitialized = false;

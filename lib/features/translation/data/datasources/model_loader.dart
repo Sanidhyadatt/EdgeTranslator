@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -131,6 +132,7 @@ class ModelLoader {
       MethodChannel('com.ikho.mistyforgelabs/ai_models');
 
   static Future<List<File>>? _inFlightExtraction;
+  static Zone? _inFlightZone;
 
   final Directory? customModelsDirectory;
   final bool? useAndroidChannel;
@@ -188,8 +190,9 @@ class ModelLoader {
   /// Flutter asset bundle to local storage, serializing concurrent calls.
   Future<List<File>> extractModelAssets({bool overwrite = false}) async {
     if (kIsWeb) return [];
+    final currentZone = Zone.current;
     final previous = _inFlightExtraction;
-    if (previous != null) {
+    if (previous != null && identical(_inFlightZone, currentZone)) {
       if (!overwrite) return await previous;
       try {
         await previous;
@@ -198,11 +201,13 @@ class ModelLoader {
 
     final extraction = _performExtractModelAssets(overwrite: overwrite);
     _inFlightExtraction = extraction;
+    _inFlightZone = currentZone;
     try {
       return await extraction;
     } finally {
       if (identical(_inFlightExtraction, extraction)) {
         _inFlightExtraction = null;
+        _inFlightZone = null;
       }
     }
   }

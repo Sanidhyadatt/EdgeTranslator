@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -79,20 +80,25 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
     });
 
     // Pre-initialize offline models and extract AI pack assets on startup
-    Future.microtask(() async {
-      try {
-        await ref.read(translationRepositoryProvider).initializeModels();
-      } on ModelExtractionException catch (e) {
+    final skipTestWarmup = !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
+    if (!skipTestWarmup) {
+      unawaited(ref.read(ttsPlayerServiceProvider).initialize());
+      Future.microtask(() async {
         if (!ref.mounted) return;
-        AppLogger.error('Pipeline', 'Offline AI pack preparation failed', e);
-        state = state.copyWith(
-          errorMessage: 'Offline AI models unavailable: ${e.message}',
-        );
-      } catch (e) {
-        if (!ref.mounted) return;
-        AppLogger.error('Pipeline', 'Background model pre-initialization notice', e);
-      }
-    });
+        try {
+          await ref.read(translationRepositoryProvider).initializeModels();
+        } on ModelExtractionException catch (e) {
+          if (!ref.mounted) return;
+          AppLogger.error('Pipeline', 'Offline AI pack preparation failed', e);
+          state = state.copyWith(
+            errorMessage: 'Offline AI models unavailable: ${e.message}',
+          );
+        } catch (e) {
+          if (!ref.mounted) return;
+          AppLogger.error('Pipeline', 'Background model pre-initialization notice', e);
+        }
+      });
+    }
 
     return const TranslationState();
   }
@@ -587,6 +593,18 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         clearInterim: true,
       );
 
+      if (!kIsWeb &&
+          !Platform.environment.containsKey('FLUTTER_TEST') &&
+          translatedText.trim().isNotEmpty) {
+        unawaited(
+          ref.read(ttsPlayerServiceProvider).prewarmPhrase(
+                translatedText,
+                language: targetLang,
+                speed: ref.read(settingsProvider).speechRate,
+              ),
+        );
+      }
+
       AppLogger.info('Pipeline', 'Speech transcribed and translated into chat history.');
     } catch (e, st) {
       AppLogger.error('Pipeline', 'Error during speech processing', e, st);
@@ -667,6 +685,18 @@ class TranslationPipelineNotifier extends Notifier<TranslationState> {
         messages: updatedMessages,
         clearInterim: true,
       );
+
+      if (!kIsWeb &&
+          !Platform.environment.containsKey('FLUTTER_TEST') &&
+          translatedText.trim().isNotEmpty) {
+        unawaited(
+          ref.read(ttsPlayerServiceProvider).prewarmPhrase(
+                translatedText,
+                language: targetLang,
+                speed: ref.read(settingsProvider).speechRate,
+              ),
+        );
+      }
 
       AppLogger.info('Pipeline', 'Text translation complete.');
     } catch (e, st) {

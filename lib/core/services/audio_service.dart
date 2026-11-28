@@ -25,7 +25,7 @@ abstract class AudioService {
 /// Implementation of AudioService using the record package for continuous 16kHz PCM Float32 streaming.
 class AudioServiceImpl implements AudioService {
   final AudioRecorder _recorder;
-  final List<int> _pcmBuffer = [];
+  final BytesBuilder _pcmBuffer = BytesBuilder(copy: false);
   final StreamController<Float32List> _streamController = StreamController<Float32List>.broadcast();
   StreamSubscription<Uint8List>? _recordSub;
 
@@ -179,7 +179,7 @@ class AudioServiceImpl implements AudioService {
       _recordSub = audioStream.listen(
         (chunk) {
           if (chunk.isNotEmpty) {
-            _pcmBuffer.addAll(chunk);
+            _pcmBuffer.add(chunk);
           }
         },
         onError: (err, st) {
@@ -213,8 +213,7 @@ class AudioServiceImpl implements AudioService {
     final totalBytes = _pcmBuffer.length;
     AppLogger.info('AudioService', 'Captured $totalBytes bytes of PCM audio.');
 
-    final floatSamples = _decodePcm16ToFloat32(Uint8List.fromList(_pcmBuffer));
-    _pcmBuffer.clear();
+    final floatSamples = _decodePcm16ToFloat32(_pcmBuffer.takeBytes());
     return floatSamples;
   }
 

@@ -52,12 +52,18 @@ class _ZenFullscreenDialog extends ConsumerWidget {
         children: [
           Positioned.fill(
             child: IgnorePointer(
-              child: Opacity(
-                opacity: 0.78,
+              child: RepaintBoundary(
                 child: Image.asset(
                   AppConstants.washiWallpaperAsset,
                   fit: BoxFit.cover,
                   alignment: Alignment.bottomCenter,
+                  color: const Color.fromRGBO(255, 255, 255, 0.78),
+                  colorBlendMode: BlendMode.modulate,
+                  filterQuality: FilterQuality.low,
+                  cacheWidth: (MediaQuery.sizeOf(context).width *
+                          MediaQuery.devicePixelRatioOf(context))
+                      .round()
+                      .clamp(360, 1440),
                   errorBuilder: (_, _, _) => const SizedBox.shrink(),
                 ),
               ),

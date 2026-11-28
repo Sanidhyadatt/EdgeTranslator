@@ -16,6 +16,27 @@ class JapaneseMeloG2p {
     required this.blankId,
   });
 
+  static List<String> _splitWhitespace(String input) {
+    final out = <String>[];
+    var start = -1;
+    for (var i = 0; i < input.length; i++) {
+      final cu = input.codeUnitAt(i);
+      final isWs = cu == 0x20 || cu == 0x09 || cu == 0x0A || cu == 0x0D || cu == 0x3000;
+      if (isWs) {
+        if (start != -1) {
+          out.add(input.substring(start, i));
+          start = -1;
+        }
+      } else if (start == -1) {
+        start = i;
+      }
+    }
+    if (start != -1) {
+      out.add(input.substring(start));
+    }
+    return out;
+  }
+
   factory JapaneseMeloG2p.fromFiles({
     required List<String> tokenLines,
     required List<String> lexiconLines,
@@ -24,7 +45,7 @@ class JapaneseMeloG2p {
     for (final line in tokenLines) {
       final trimmed = line.trimRight();
       if (trimmed.isEmpty) continue;
-      final parts = trimmed.split(RegExp(r'\s+'));
+      final parts = _splitWhitespace(trimmed);
       if (parts.length >= 2) {
         final id = int.tryParse(parts.last);
         if (id != null) {
@@ -43,7 +64,9 @@ class JapaneseMeloG2p {
     var maxLen = 1;
 
     for (final line in lexiconLines) {
-      final parts = line.trim().split(RegExp(r'\s+'));
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final parts = _splitWhitespace(trimmed);
       if (parts.length < 3) continue;
       final word = parts[0];
       final rest = parts.sublist(1);
@@ -263,11 +286,19 @@ class JapaneseMeloG2p {
     final normalized = _normalizePunctuation(text.trim());
     if (normalized.isEmpty) return const [];
 
-    final rawSentences = normalized
-        .split(RegExp(r'(?<=[.,!?])\s*'))
-        .map((s) => s.trim())
-        .where((s) => s.isNotEmpty)
-        .toList();
+    final rawSentences = <String>[];
+    for (final part in normalized.split(RegExp(r'(?<=[.!?])\s*'))) {
+      final s = part.trim();
+      if (s.isEmpty) continue;
+      if (s.length > 24 && s.contains(',')) {
+        for (final sub in s.split(RegExp(r'(?<=,)\s*'))) {
+          final cleanSub = sub.trim();
+          if (cleanSub.isNotEmpty) rawSentences.add(cleanSub);
+        }
+      } else {
+        rawSentences.add(s);
+      }
+    }
 
     final encoded = <List<int>>[];
     for (final sentence in rawSentences) {
@@ -333,7 +364,23 @@ class JapaneseMeloG2p {
         continue;
       }
 
-      // 3. Longest lexicon match (Kanji compounds and verified Kanji+okurigana forms)
+      // 3. Curated Kanji long-vowel & common compound pronunciation overrides
+      String? overrideWord;
+      final maxOverrideEnd = (i + _maxOverrideLength) < len ? (i + _maxOverrideLength) : len;
+      for (var end = maxOverrideEnd; end > i; end--) {
+        final candidate = sentence.substring(i, end);
+        if (_kanjiPronunciationOverrides.containsKey(candidate)) {
+          overrideWord = candidate;
+          break;
+        }
+      }
+      if (overrideWord != null) {
+        phones.addAll(_kanjiPronunciationOverrides[overrideWord]!);
+        i += overrideWord.length;
+        continue;
+      }
+
+      // 4. Longest lexicon match (Kanji compounds and verified Kanji+okurigana forms)
       String? matchedWord;
       final maxEnd = (i + maxWordLength) < len ? (i + maxWordLength) : len;
       for (var end = maxEnd; end > i; end--) {
@@ -397,7 +444,29 @@ class JapaneseMeloG2p {
         continue;
       }
 
-      // 8. Fallback for ASCII digits/letters
+      // 8. Multi-digit ASCII integers and single ASCII character fallback
+      final cu = ch.codeUnitAt(0);
+      if (cu >= 0x30 && cu <= 0x39) {
+        var end = i + 1;
+        while (end < len) {
+          final nextCu = sentence.codeUnitAt(end);
+          if (nextCu < 0x30 || nextCu > 0x39) break;
+          end++;
+        }
+        final digits = sentence.substring(i, end);
+        final numPhones = _readJapaneseNumber(digits);
+        if (numPhones != null) {
+          phones.addAll(numPhones);
+        } else {
+          for (var d = 0; d < digits.length; d++) {
+            final dp = _digitReadings[digits[d]];
+            if (dp != null) phones.addAll(dp);
+          }
+        }
+        i = end;
+        continue;
+      }
+
       final lower = ch.toLowerCase();
       if (_digitReadings.containsKey(lower)) {
         phones.addAll(_digitReadings[lower]!);
@@ -497,9 +566,57 @@ class JapaneseMeloG2p {
     'で', 'に', 'と', 'から', 'まで', 'だけ',
   ];
 
+  static const int _maxOverrideLength = 4;
+
+  static const Map<String, List<String>> _kanjiPronunciationOverrides = {
+    'お手洗い': ['o', 't', 'e', 'a', 'r', 'a', 'i'],
+    'お父さん': ['o', 't', 'o', 'u', 's', 'a', 'N'],
+    'お母さん': ['o', 'k', 'a', 'a', 's', 'a', 'N'],
+    'お兄さん': ['o', 'n', 'i', 'i', 's', 'a', 'N'],
+    'お姉さん': ['o', 'n', 'e', 'e', 's', 'a', 'N'],
+    'お会計': ['o', 'k', 'a', 'i', 'k', 'e', 'i'],
+    '領収書': ['ry', 'o', 'u', 'sh', 'u', 'u', 'sh', 'o'],
+    '新幹線': ['sh', 'i', 'N', 'k', 'a', 'N', 's', 'e', 'N'],
+    '飛行機': ['h', 'i', 'k', 'o', 'u', 'k', 'i'],
+    '日本語': ['n', 'i', 'h', 'o', 'N', 'g', 'o'],
+    '大丈夫': ['d', 'a', 'i', 'j', 'o', 'u', 'b', 'u'],
+    '東京': ['t', 'o', 'u', 'ky', 'o', 'u'],
+    '京都': ['ky', 'o', 'u', 't', 'o'],
+    '大阪': ['o', 'o', 's', 'a', 'k', 'a'],
+    '空港': ['k', 'u', 'u', 'k', 'o', 'u'],
+    '英語': ['e', 'i', 'g', 'o'],
+    '日本': ['n', 'i', 'h', 'o', 'N'],
+    '病院': ['by', 'o', 'u', 'i', 'N'],
+    '公園': ['k', 'o', 'u', 'e', 'N'],
+    '交番': ['k', 'o', 'u', 'b', 'a', 'N'],
+    '先生': ['s', 'e', 'N', 's', 'e', 'i'],
+    '学生': ['g', 'a', 'k', 'u', 's', 'e', 'i'],
+    '今日': ['ky', 'o', 'u'],
+    '昨日': ['k', 'i', 'n', 'o', 'u'],
+    '明日': ['a', 'sh', 'i', 't', 'a'],
+    '番号': ['b', 'a', 'N', 'g', 'o', 'u'],
+    '電話': ['d', 'e', 'N', 'w', 'a'],
+    '携帯': ['k', 'e', 'i', 't', 'a', 'i'],
+    '料理': ['ry', 'o', 'u', 'r', 'i'],
+    '料金': ['ry', 'o', 'u', 'k', 'i', 'N'],
+    '注文': ['ch', 'u', 'u', 'm', 'o', 'N'],
+    '牛乳': ['gy', 'u', 'u', 'ny', 'u', 'u'],
+    '会計': ['k', 'a', 'i', 'k', 'e', 'i'],
+    '有名': ['y', 'u', 'u', 'm', 'e', 'i'],
+    '丁寧': ['t', 'e', 'i', 'n', 'e', 'i'],
+    '綺麗': ['k', 'i', 'r', 'e', 'i'],
+    '本当': ['h', 'o', 'N', 't', 'o', 'u'],
+  };
+
   static const Map<String, List<String>> _specialKanaWords = {
+    'おはようございます': ['o', 'h', 'a', 'y', 'o', 'u', 'g', 'o', 'z', 'a', 'i', 'm', 'a', 's', 'u'],
+    'ありがとうございます': ['a', 'r', 'i', 'g', 'a', 't', 'o', 'u', 'g', 'o', 'z', 'a', 'i', 'm', 'a', 's', 'u'],
+    'どういたしまして': ['d', 'o', 'u', 'i', 't', 'a', 'sh', 'i', 'm', 'a', 'sh', 'i', 't', 'e'],
     'こんにちは': ['k', 'o', 'N', 'n', 'i', 'ch', 'i', 'w', 'a'],
     'こんばんは': ['k', 'o', 'N', 'b', 'a', 'N', 'w', 'a'],
+    'ありがとう': ['a', 'r', 'i', 'g', 'a', 't', 'o', 'u'],
+    'さようなら': ['s', 'a', 'y', 'o', 'u', 'n', 'a', 'r', 'a'],
+    'おはよう': ['o', 'h', 'a', 'y', 'o', 'u'],
   };
 
   static const Map<String, List<String>> _kanaDigraphs = {
@@ -551,6 +668,71 @@ class JapaneseMeloG2p {
     '6': ['r', 'o', 'k', 'u'],
     '7': ['n', 'a', 'n', 'a'],
     '8': ['h', 'a', 'ch', 'i'],
-    '9': ['ky', 'u'],
+    '9': ['ky', 'u', 'u'],
   };
+
+  static List<String>? _readJapaneseNumber(String digits) {
+    if (digits.isEmpty || digits.length > 5) return null;
+    if (digits.length > 1 && digits.startsWith('0')) return null;
+    final n = int.tryParse(digits);
+    if (n == null || n < 0 || n > 99999) return null;
+    if (n < 10) return _digitReadings[digits];
+
+    final out = <String>[];
+    var rem = n;
+    final man = rem ~/ 10000;
+    rem %= 10000;
+    if (man > 0) {
+      out.addAll(_digitReadings[man.toString()]!);
+      out.addAll(const ['m', 'a', 'N']);
+    }
+
+    final sen = rem ~/ 1000;
+    rem %= 1000;
+    if (sen > 0) {
+      switch (sen) {
+        case 1:
+          out.addAll(const ['s', 'e', 'N']);
+        case 3:
+          out.addAll(const ['s', 'a', 'N', 'z', 'e', 'N']);
+        case 8:
+          out.addAll(const ['h', 'a', 'q', 's', 'e', 'N']);
+        default:
+          out.addAll(_digitReadings[sen.toString()]!);
+          out.addAll(const ['s', 'e', 'N']);
+      }
+    }
+
+    final hyaku = rem ~/ 100;
+    rem %= 100;
+    if (hyaku > 0) {
+      switch (hyaku) {
+        case 1:
+          out.addAll(const ['hy', 'a', 'k', 'u']);
+        case 3:
+          out.addAll(const ['s', 'a', 'N', 'by', 'a', 'k', 'u']);
+        case 6:
+          out.addAll(const ['r', 'o', 'q', 'py', 'a', 'k', 'u']);
+        case 8:
+          out.addAll(const ['h', 'a', 'q', 'py', 'a', 'k', 'u']);
+        default:
+          out.addAll(_digitReadings[hyaku.toString()]!);
+          out.addAll(const ['hy', 'a', 'k', 'u']);
+      }
+    }
+
+    final ju = rem ~/ 10;
+    rem %= 10;
+    if (ju > 0) {
+      if (ju > 1) {
+        out.addAll(_digitReadings[ju.toString()]!);
+      }
+      out.addAll(const ['j', 'u', 'u']);
+    }
+
+    if (rem > 0) {
+      out.addAll(_digitReadings[rem.toString()]!);
+    }
+    return out;
+  }
 }

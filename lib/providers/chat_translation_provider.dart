@@ -1,4 +1,7 @@
 
+import 'dart:io';
+
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../core/services/translation_service.dart';
@@ -56,14 +59,17 @@ class ChatTranslationNotifier extends Notifier<ChatTranslationState> {
     });
 
     // Warm up the bundled on-device engine in the background (no download involved).
-    Future.microtask(() async {
-      if (_disposed) return;
-      try {
-        await ref.read(translationServiceProvider).initializeModels();
-      } catch (e) {
-        AppLogger.warning('ChatTranslationNotifier', 'Engine warm-up notice: $e');
-      }
-    });
+    final skipTestWarmup = !kIsWeb && Platform.environment.containsKey('FLUTTER_TEST');
+    if (!skipTestWarmup) {
+      Future.microtask(() async {
+        if (_disposed) return;
+        try {
+          await ref.read(translationServiceProvider).initializeModels();
+        } catch (e) {
+          AppLogger.warning('ChatTranslationNotifier', 'Engine warm-up notice: $e');
+        }
+      });
+    }
     return const ChatTranslationState(areModelsDownloaded: true);
   }
 

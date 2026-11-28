@@ -115,6 +115,22 @@ android {
     }
 
     assetPacks += ":ai_models"
+
+    val isAppBundleBuild = gradle.startParameter.taskNames.any {
+        it.contains("bundle", ignoreCase = true)
+    }
+
+    sourceSets {
+        getByName("main") {
+            if (!isAppBundleBuild) {
+                assets.srcDir("../ai_models/src/main/assets")
+            }
+        }
+    }
+
+    androidResources {
+        noCompress += listOf("onnx", "spm", "bin")
+    }
 }
 
 kotlin {
